@@ -113,6 +113,8 @@ def test_detect_call_state_connected_when_timer_found():
         if "pRLmDf" in sel or "call-timer" in sel or "call duration" in sel.lower():
             mock_el = MagicMock()
             mock_el.is_displayed.return_value = True
+            mock_el.text = "0:03"
+            mock_el.get_attribute.return_value = ""
             return [mock_el]
         return []
 
@@ -124,6 +126,28 @@ def test_detect_call_state_connected_when_timer_found():
 
     result = b.detect_call_state(session, poll_interval=0.05, timeout=2.0)
     assert result == CallState.CONNECTED
+
+
+def test_detect_call_state_does_not_connect_on_hangup_button_only():
+    b = _make_browser()
+
+    def side_effect(by, sel):
+        if "hang" in sel.lower() or "end-call" in sel.lower() or "call_end" in sel:
+            mock_el = MagicMock()
+            mock_el.is_displayed.return_value = True
+            return [mock_el]
+        return []
+
+    b.driver.find_elements.side_effect = side_effect
+    b.driver.page_source = "<html></html>"
+
+    session = CallSession(phone="+15551234567", contact_name="Test")
+    session.transition(CallState.DIALING)
+
+    result = b.detect_call_state(session, poll_interval=0.05, timeout=0.2)
+
+    assert result == CallState.FAILED
+    assert session.state == CallState.FAILED
 
 
 def test_detect_call_state_voicemail_via_page_source():

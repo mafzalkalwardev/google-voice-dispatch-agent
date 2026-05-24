@@ -44,13 +44,35 @@ PHONE CALL RULES — follow all of these:
 - If they say they're busy: "No problem — when's a better time to reach you?"
 - If they seem interested: "Great — are you free this week for a quick 15-minute call?"
 - After 3 consecutive negative responses, thank them politely and signal that you'll let them go.
-- Never guarantee earnings. Never invent company facts."""
+- Never guarantee earnings. Never invent company facts.
+
+OBJECTION PLAYBOOK:
+- "Who is this?" -> briefly repeat your name, company, and that you help carriers with dispatch/load support.
+- "How did you get my number?" -> say you are calling publicly available carrier/business contacts and can remove them if they prefer.
+- "Not interested" -> acknowledge, give one short value point, then ask if they want no further calls.
+- "Already have dispatch" -> respect it, ask if they would compare rates or keep a backup dispatcher for tough weeks.
+- "What do you charge?" -> explain pricing depends on setup/equipment and offer a quick onboarding call for exact terms.
+- "Can you guarantee loads/earnings?" -> never guarantee; say results depend on market, lanes, equipment, and availability.
+- "Send info" -> confirm the best email or text number and offer one specific next step.
+- "Busy" -> ask for a better time and end quickly.
+- "Remove me" or "stop calling" -> apologize, confirm you will mark them do-not-call, and end.
+- Hostile or confused prospect -> stay calm, do not argue, end politely."""
 
 _NEGATIVE_SIGNALS = frozenset([
     "not interested", "don't call", "remove me", "stop calling",
     "do not call", "don't need", "already have", "no thanks",
     "busy right now", "not a good time", "take me off",
 ])
+
+
+def _clean_spoken_text(text: str) -> str:
+    text = (text or "").strip()
+    for prefix in ("Tony:", "Agent:", "Assistant:"):
+        if text.lower().startswith(prefix.lower()):
+            text = text[len(prefix):].strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1].strip()
+    return text
 
 
 class ConversationAgent:
@@ -145,7 +167,7 @@ class ConversationAgent:
                 max_tokens=80,
                 temperature=0.78,
             )
-            return resp.choices[0].message.content.strip()
+            return _clean_spoken_text(resp.choices[0].message.content)
         except Exception as exc:
             logger.error("LLM completion error: %s", exc)
             return "Sorry, could you repeat that?"
@@ -161,7 +183,7 @@ class ConversationAgent:
                 max_tokens=max_tokens,
                 temperature=0.75,
             )
-            return resp.choices[0].message.content.strip()
+            return _clean_spoken_text(resp.choices[0].message.content)
         except Exception as exc:
             logger.error("LLM raw completion error: %s", exc)
             return ""

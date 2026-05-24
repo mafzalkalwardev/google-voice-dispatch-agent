@@ -13,3 +13,9 @@ keyboard
 numpy
 pytest
 pytest-mock
+# Web frontend
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart
+httpx

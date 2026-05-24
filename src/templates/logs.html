@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% set active_page = "logs" %}
+
+{% block title %}Call Logs — INDUS TRANSPORTS LLC{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Call Logs</h2>
+  <p class="page-sub">History from <code>logs/call_logs.csv</code></p>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <h3 class="panel-title">Recent Calls</h3>
+    <div style="display:flex;gap:.5rem">
+      <input type="text" id="logSearch" placeholder="Filter by name, phone, status…"
+             oninput="filterLogs()" style="width:220px;padding:.35rem .6rem" />
+      <button class="btn btn-secondary" onclick="location.reload()">Refresh</button>
+    </div>
+  </div>
+
+  {% if logs %}
+  <div class="table-wrap">
+    <table class="data-table" id="logsTable">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Name</th>
+          <th>Phone</th>
+          <th>Status</th>
+          <th>Outcome</th>
+          <th>Connected</th>
+          <th>Total</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody id="logsTbody">
+        {% for row in logs %}
+        <tr data-search="{{ (row.name ~ ' ' ~ row.phone ~ ' ' ~ row.status ~ ' ' ~ row.outcome) | lower }}">
+          <td class="td-mono td-nowrap">{{ row.timestamp }}</td>
+          <td>{{ row.name }}</td>
+          <td class="td-mono">{{ row.phone }}</td>
+          <td><span class="badge badge--{{ row.status | lower }}">{{ row.status }}</span></td>
+          <td><span class="badge badge--{{ row.outcome | lower }}">{{ row.outcome }}</span></td>
+          <td class="td-mono">{{ "%.1fs" | format(row.connected_duration_s | float) if row.connected_duration_s else "—" }}</td>
+          <td class="td-mono">{{ "%.1fs" | format(row.total_duration_s | float) if row.total_duration_s else "—" }}</td>
+          <td class="td-notes">{{ row.notes }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">No call logs yet. <a href="/run">Start a run</a> to generate logs.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterLogs() {
+  const query = document.getElementById('logSearch').value.toLowerCase();
+  document.querySelectorAll('#logsTbody tr').forEach(row => {
+    const search = row.getAttribute('data-search') || '';
+    row.style.display = search.includes(query) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}

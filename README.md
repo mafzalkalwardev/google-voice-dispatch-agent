@@ -1,29 +1,11 @@
-# Google Voice Dispatch Agent
+# Google Voice Dispatch Agent — INDUS TRANSPORTS LLC
 
 Realtime Google Voice browser automation for freight dispatch outreach.
+Includes a full operator console web frontend.
 
-## Live Mode
+---
 
-The default runtime is now live realtime conversation:
-
-- Selenium opens Google Voice with a persistent Chrome profile.
-- The app dials contacts from Excel/CSV.
-- Connected calls use Groq STT, Groq chat, and realtime TTS routed into Google Voice.
-- Voicemail still uses a generated fallback WAV after voicemail is detected.
-- Calls are logged to `logs/call_logs.csv`.
-
-This is not a telephony API. It depends on Google Voice in Chrome plus Windows audio routing.
-
-## Requirements
-
-- Python 3.11+
-- Chrome
-- A logged-in Google Voice account
-- `GROQ_API_KEY`
-- VB-CABLE or equivalent virtual audio cable
-- Chrome microphone set to the cable output used by Google Voice
-
-## Setup
+## Quick Start
 
 ```powershell
 python -m venv .venv
@@ -31,25 +13,80 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` and set your real values. You can also copy
-`dialer_config.example.json` to `dialer_config.json` for local JSON config.
+Copy `.env.example` to `.env` and fill in real values (at minimum `GROQ_API_KEY` and `CALLBACK_NUMBER`).
 
-Check audio devices:
+---
+
+## Web Frontend (Operator Console)
+
+Quick Windows launcher:
+
+```powershell
+.\Start-IndusConsole.ps1
+```
+
+This starts the local backend and opens the Live Run console automatically.
+If PowerShell blocks scripts, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Start-IndusConsole.ps1
+```
+
+Manual start:
+
+```powershell
+python -m src.web_app
+```
+
+Then open **http://127.0.0.1:8000** in your browser.
+
+Or with auto-reload during development:
+
+```powershell
+uvicorn src.web_app:app --reload --port 8000
+```
+
+### Console pages
+
+| URL | Description |
+|-----|-------------|
+| `/` | Dashboard — recent call stats and quick actions |
+| `/preflight` | Run all environment checks before dialing |
+| `/settings` | Configure profiles, models, audio, timing |
+| `/contacts` | Upload or preview CSV/XLSX contact list |
+| `/audio` | Detected audio devices, loopback quick-set |
+| `/run` | Start / stop live runs, dry runs, live log stream |
+| `/logs` | Searchable call log viewer |
+
+---
+
+## CLI
+
+### List audio devices
 
 ```powershell
 python -m src.main --list-audio-devices
-python -m src.audio_diagnostics
 ```
 
-## Run Live
+### Run preflight checks
+
+```powershell
+python -m src.main --preflight
+```
+
+### Dry run (no dialing, generates scripts only)
+
+```powershell
+python -m src.main --contacts data/contacts.xlsx --profile sales1 --limit 3 --dry-run
+```
+
+### One live test call (confirm a safe number first)
 
 ```powershell
 python -m src.main --contacts data/contacts.xlsx --profile sales1 --limit 1
 ```
 
-Realtime mode is the default. Use `--static-playback` only if you want the older pregenerated WAV flow.
-
-Common options:
+### Common options
 
 ```powershell
 python -m src.main `
@@ -57,17 +94,78 @@ python -m src.main `
   --profile sales1 `
   --loopback-device "CABLE Input" `
   --capture-device default `
+  --call-timeout 45 `
+  --call-max-duration 120 `
+  --callback-number "+15551234567" `
   --limit 1
 ```
 
-For a dual-cable setup, set Chrome speaker output to a second cable input and pass its paired output as `--capture-device`.
+Realtime conversation is the default. Use `--static-playback` only for the older pregenerated WAV flow.
+The app now waits for answered-call timer evidence before the realtime opening line; the hangup button alone is treated as ringing, not connected.
 
-## Safety Notes
+---
 
-- Keep `.env`, `dialer_config.json`, contacts, generated audio, logs, and Chrome profiles out of Git.
+## Audio Routing (Windows)
+
+Install **VB-CABLE** from https://vb-audio.com/Cable/.
+
+### Single-cable setup (default)
+
+| Signal path | Device |
+|---|---|
+| TTS → Chrome mic | `CABLE Input` (output device) → `CABLE Output` set as Chrome microphone |
+| Prospect → STT | System speakers loopback captured via `CAPTURE_DEVICE=default` |
+
+Set in `.env`:
+```
+LOOPBACK_DEVICE=CABLE Input
+CAPTURE_DEVICE=default
+```
+
+If preflight reports `Device unavailable`, select a different matching `CABLE Input` index/name from the Audio page or disable Windows exclusive-mode access for that playback device.
+
+### Dual-cable setup (recommended for echo-free capture)
+
+Use a second VB-CABLE pair (CABLE B). Route Chrome speaker output to CABLE B Input.
+Capture from CABLE B Output instead of the system default:
+```
+LOOPBACK_DEVICE=CABLE Input
+CAPTURE_DEVICE=CABLE B Output
+```
+
+---
+
+## Environment Variables
+
+See `.env.example` for the full list. Key variables:
+
+```env
+GROQ_API_KEY=gsk_...
+CALLBACK_NUMBER=+15551234567
+AGENT_NAME=Tony
+COMPANY_NAME=Indus Transports LLC
+LOOPBACK_DEVICE=CABLE Input
+CAPTURE_DEVICE=default
+```
+
+---
+
+## Tests
+
+```powershell
+python -m pytest tests/ -v
+```
+
+---
+
+## Safety & Compliance
+
+- Keep `.env`, `dialer_config.json`, contacts, audio, logs, and Chrome profiles out of Git.
 - Test with your own phone first using `--limit 1`.
-- Follow consent, telemarketing, robocall, call recording, DNC, and Google Voice terms that apply to your use.
+- Follow TCPA, FDCPA, DNC registry rules, state call-recording laws, Google Voice Terms of Service,
+  and all applicable regulations before dialing third parties.
+- The web console shows a compliance acknowledgement before enabling live dialing.
 
-## Claude Handoff
+---
 
-See `CLAUDE_PROMPT.md` for the next focused engineering pass.
+*Developer: **Muhammad Afzal** — WhatsApp: +923079670503*

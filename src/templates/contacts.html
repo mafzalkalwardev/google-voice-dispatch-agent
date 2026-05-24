@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% set active_page = "contacts" %}
+
+{% block title %}Contacts — INDUS TRANSPORTS LLC{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Contacts</h2>
+  <p class="page-sub">Upload a CSV or XLSX contact list</p>
+</div>
+
+<div class="panel" style="max-width:700px">
+  <div class="panel-header">
+    <h3 class="panel-title">Upload Contacts</h3>
+  </div>
+
+  <div class="field-hint" style="margin-bottom:1rem">
+    Required columns: <code>Phone</code> (or Mobile/Number) and <code>Name</code> (or Company/Legal Name).
+    Accepted formats: <code>.csv</code>, <code>.xlsx</code>, <code>.xls</code>.
+  </div>
+
+  <div class="upload-zone" id="uploadZone"
+       ondragover="event.preventDefault();this.classList.add('upload-zone--over')"
+       ondragleave="this.classList.remove('upload-zone--over')"
+       ondrop="handleDrop(event)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="40" height="40" style="margin-bottom:.5rem;color:var(--blue)">
+      <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
+      <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
+    </svg>
+    <div>Drag &amp; drop a file here, or</div>
+    <label class="btn btn-secondary" style="margin-top:.5rem;cursor:pointer">
+      Choose File
+      <input type="file" id="fileInput" accept=".csv,.xlsx,.xls" style="display:none" onchange="uploadFile(this.files[0])">
+    </label>
+    <div class="field-hint" style="margin-top:.5rem" id="uploadStatus"></div>
+  </div>
+
+  <div id="uploadResult" style="margin-top:1rem"></div>
+</div>
+
+<!-- Current file info -->
+<div class="panel" style="max-width:700px;margin-top:1.5rem">
+  <div class="panel-header">
+    <h3 class="panel-title">Current Contacts File</h3>
+  </div>
+  <div class="field-info">
+    <span class="field-info-label">Path:</span>
+    <code>{{ contacts_file or "(not configured)" }}</code>
+  </div>
+  {% if preview.error %}
+  <div class="alert alert-error" style="margin-top:1rem">{{ preview.error }}</div>
+  {% elif preview.total > 0 %}
+  <div class="alert alert-success" style="margin-top:1rem">
+    {{ preview.total }} contacts loaded{% if preview.total > 15 %} — showing first 15{% endif %}
+  </div>
+  <div class="table-wrap" style="margin-top:1rem">
+    <table class="data-table">
+      <thead><tr><th>#</th><th>Name</th><th>Phone</th></tr></thead>
+      <tbody>
+        {% for c in preview.rows %}
+        <tr>
+          <td class="td-mono">{{ loop.index }}</td>
+          <td>{{ c.name }}</td>
+          <td class="td-mono">{{ c.phone }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">No contacts loaded. Upload a file above.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById('uploadZone').classList.remove('upload-zone--over');
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFile(file);
+}
+
+async function uploadFile(file) {
+  if (!file) return;
+  const statusEl = document.getElementById('uploadStatus');
+  const resultEl = document.getElementById('uploadResult');
+  statusEl.textContent = 'Uploading…';
+  resultEl.innerHTML = '';
+
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const resp = await fetch('/api/contacts/upload', { method: 'POST', body: formData });
+    const data = await resp.json();
+    if (data.ok) {
+      statusEl.textContent = '';
+      resultEl.innerHTML = `<div class="alert alert-success">
+        ✓ Uploaded <strong>${file.name}</strong> — ${data.count} contacts.
+        <a href="/contacts">Reload page</a> to see preview.
+      </div>`;
+    } else {
+      statusEl.textContent = '';
+      resultEl.innerHTML = `<div class="alert alert-error">Upload failed: ${data.error}</div>`;
+    }
+  } catch (err) {
+    statusEl.textContent = '';
+    resultEl.innerHTML = `<div class="alert alert-error">Error: ${err.message}</div>`;
+  }
+}
+</script>
+{% endblock %}

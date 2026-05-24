@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% set active_page = "audio" %}
+
+{% block title %}Audio Devices — INDUS TRANSPORTS LLC{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Audio Devices</h2>
+  <p class="page-sub">Detected input and output devices via sounddevice</p>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <h3 class="panel-title">Detected Devices</h3>
+    <button class="btn btn-secondary" onclick="refreshDevices()">Refresh</button>
+  </div>
+
+  {% if devices %}
+  <div class="audio-routing-hint">
+    <strong>Routing guide:</strong>
+    Set <em>Loopback Device</em> to an <strong>output</strong> cable input (e.g. CABLE Input) — TTS audio plays to it.
+    Chrome must use its <strong>paired output</strong> (e.g. CABLE Output) as its microphone.
+    Set <em>Capture Device</em> to either <code>default</code> (WASAPI loopback on system speakers) or
+    a dedicated cable output that receives the prospect audio.
+  </div>
+
+  <div class="table-wrap" id="devicesTable">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Idx</th>
+          <th>Name</th>
+          <th>Inputs</th>
+          <th>Outputs</th>
+          <th>Sample Rate</th>
+          <th>Role</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in devices %}
+        <tr class="{% if loopback_device.lower() in d.name.lower() %}row-highlight-amber{% elif capture_device.lower() != 'default' and capture_device.lower() in d.name.lower() %}row-highlight-blue{% endif %}">
+          <td class="td-mono">{{ d.index }}</td>
+          <td>{{ d.name }}</td>
+          <td class="td-mono">{{ d.max_input_channels }}</td>
+          <td class="td-mono">{{ d.max_output_channels }}</td>
+          <td class="td-mono">{{ d.default_samplerate }}</td>
+          <td>
+            {% if loopback_device.lower() in d.name.lower() %}
+              <span class="badge badge--amber">Loopback (TTS out)</span>
+            {% elif capture_device.lower() != 'default' and capture_device.lower() in d.name.lower() %}
+              <span class="badge badge--blue">Capture (prospect in)</span>
+            {% elif d.max_input_channels > 0 and d.max_output_channels == 0 %}
+              <span class="badge badge--slate">Input only</span>
+            {% elif d.max_output_channels > 0 and d.max_input_channels == 0 %}
+              <span class="badge badge--slate">Output only</span>
+            {% else %}
+              <span class="badge badge--slate">Full duplex</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    No audio devices found.
+    Install sounddevice: <code>pip install sounddevice soundfile</code>
+  </div>
+  {% endif %}
+</div>
+
+<div class="panel" style="max-width:640px;margin-top:1.5rem">
+  <div class="panel-header"><h3 class="panel-title">Quick-Set Device Names</h3></div>
+  <p class="panel-desc">Type partial names below to update loopback and capture device settings.</p>
+  <div class="form-grid">
+    <div class="form-group">
+      <label>Loopback Device <span class="label-hint">(output, TTS → Chrome mic)</span></label>
+      <input type="text" id="loopbackInput" value="{{ loopback_device }}" placeholder="CABLE Input" />
+    </div>
+    <div class="form-group">
+      <label>Capture Device <span class="label-hint">(input, prospect audio)</span></label>
+      <input type="text" id="captureInput" value="{{ capture_device }}" placeholder="default" />
+    </div>
+  </div>
+  <div class="form-actions">
+    <button class="btn btn-primary" onclick="saveAudioSettings()">Save to Settings</button>
+    <span id="audioSaveStatus" style="margin-left:1rem;color:var(--green)"></span>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function refreshDevices() {
+  const resp = await fetch('/api/audio/devices');
+  const devs = await resp.json();
+  // Simple reload for now
+  location.reload();
+}
+
+async function saveAudioSettings() {
+  const loopback = document.getElementById('loopbackInput').value.trim();
+  const capture = document.getElementById('captureInput').value.trim();
+  const statusEl = document.getElementById('audioSaveStatus');
+  statusEl.textContent = 'Saving…';
+  try {
+    const resp = await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ loopback_device: loopback, capture_device: capture }),
+    });
+    const r = await resp.json();
+    statusEl.textContent = r.ok ? '✓ Saved' : ('Error: ' + r.error);
+    setTimeout(() => statusEl.textContent = '', 3000);
+  } catch(e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+</script>
+{% endblock %}

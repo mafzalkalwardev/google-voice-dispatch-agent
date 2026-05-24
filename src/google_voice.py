@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -104,6 +105,9 @@ _VOICEMAIL_PAGE_PHRASES = [
     "leave a voicemail",
 ]
 
+_DURATION_RE = re.compile(r"\b(?:\d{1,2}:)?\d{1,2}:\d{2}\b")
+_DURATION_WORD_RE = re.compile(r"\b\d+\s*(?:second|seconds|minute|minutes)\b", re.I)
+
 
 def _js_click(driver: webdriver.Chrome, element) -> None:
     try:
@@ -172,6 +176,18 @@ class GoogleVoiceBrowser:
                 pass
             self.driver = None
 
+    def _focus_driver(self) -> bool:
+        if not self.driver:
+            return False
+        try:
+            self.driver.switch_to.window(self.driver.current_window_handle)
+            self.driver.execute_script("window.focus();")
+            return True
+        except WebDriverException as exc:
+            logger.error("Google Voice browser session is unavailable: %s", exc)
+            self.driver = None
+            return False
+
     # ------------------------------------------------------------------
     # Login detection
     # ------------------------------------------------------------------
@@ -225,6 +241,35 @@ class GoogleVoiceBrowser:
                 pass
         return False
 
+    def _connected_timer_present(self) -> bool:
+        """
+        Return True only for timer-like connected-call evidence.
+        The hangup button appears while Google Voice is still ringing, so it is
+        not enough to treat the call as answered.
+        """
+        for sel in _SEL.get("call_timer", []):
+            try:
+                els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+            except WebDriverException:
+                continue
+            for el in els:
+                try:
+                    if not el.is_displayed():
+                        continue
+                    raw_parts = (
+                        getattr(el, "text", ""),
+                        el.get_attribute("aria-label"),
+                        el.get_attribute("title"),
+                    )
+                    text = " ".join(part for part in raw_parts if isinstance(part, str))
+                    if _DURATION_RE.search(text) or (
+                        "duration" in text.lower() and _DURATION_WORD_RE.search(text)
+                    ):
+                        return True
+                except WebDriverException:
+                    continue
+        return False
+
     # ------------------------------------------------------------------
     # Dialing
     # ------------------------------------------------------------------
@@ -233,8 +278,8 @@ class GoogleVoiceBrowser:
         if not self.driver:
             raise RuntimeError("Browser is not launched")
 
-        self.driver.switch_to.window(self.driver.current_window_handle)
-        self.driver.execute_script("window.focus();")
+        if not self._focus_driver():
+            return False
         time.sleep(0.5)
 
         wait = WebDriverWait(self.driver, 15)
@@ -328,14 +373,9 @@ class GoogleVoiceBrowser:
 
         while time.time() < deadline:
             # --- CONNECTED: call timer appeared ---
-            if self._any_present("call_timer"):
+            if self._connected_timer_present():
                 if session.state == CallState.RINGING:
                     session.transition(CallState.CONNECTED, "call timer visible")
-                return CallState.CONNECTED
-
-            # --- CONNECTED: hangup button visible (broader signal) ---
-            if self._any_present("call_active") and session.state == CallState.RINGING:
-                session.transition(CallState.CONNECTED, "hangup button appeared")
                 return CallState.CONNECTED
 
             # --- VOICEMAIL: DOM cue ---
@@ -399,8 +439,8 @@ class GoogleVoiceBrowser:
     def hangup_call(self) -> bool:
         if not self.driver:
             return False
-        self.driver.switch_to.window(self.driver.current_window_handle)
-        self.driver.execute_script("window.focus();")
+        if not self._focus_driver():
+            return False
 
         wait = WebDriverWait(self.driver, 8)
         for sel in _SEL["hangup_button"]:

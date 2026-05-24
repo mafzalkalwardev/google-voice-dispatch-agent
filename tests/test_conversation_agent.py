@@ -36,6 +36,14 @@ def test_opening_line_returns_string(mock_groq):
     assert len(line) > 0
 
 
+def test_opening_line_strips_wrapping_quotes(mock_groq):
+    _, mock_client = mock_groq
+    mock_client.chat.completions.create.return_value = _make_completion('"Hi, Tony from Indus Transports."')
+    from src.conversation_agent import ConversationAgent
+    agent = ConversationAgent(api_key="test_key")
+    assert agent.opening_line() == "Hi, Tony from Indus Transports."
+
+
 def test_respond_to_returns_string(mock_groq):
     _, mock_client = mock_groq
     mock_client.chat.completions.create.return_value = _make_completion(

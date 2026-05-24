@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% set active_page = "dashboard" %}
+
+{% block title %}Dashboard — INDUS TRANSPORTS LLC{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Dashboard</h2>
+  <p class="page-sub">System overview and quick actions</p>
+</div>
+
+<!-- Quick-action bar -->
+<div class="quick-actions">
+  <a href="/preflight" class="btn btn-secondary">Run Preflight</a>
+  <a href="/run" class="btn btn-primary">Live Run Console</a>
+  <a href="/logs" class="btn btn-ghost">View Call Logs</a>
+</div>
+
+<!-- Status cards -->
+<div class="card-grid">
+  <div class="stat-card">
+    <div class="stat-icon stat-icon--blue">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
+        <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 1h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 8a16 16 0 0 0 6 6l.27-.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 21 16z"/>
+      </svg>
+    </div>
+    <div class="stat-body">
+      <div class="stat-label">Total Calls</div>
+      <div class="stat-value">{{ recent_logs | length }}</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-icon stat-icon--green">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
+        <polyline points="20 6 9 17 4 12"/>
+      </svg>
+    </div>
+    <div class="stat-body">
+      <div class="stat-label">Connected</div>
+      <div class="stat-value">{{ recent_logs | selectattr("status", "equalto", "CONNECTED") | list | length }}</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-icon stat-icon--amber">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+    </div>
+    <div class="stat-body">
+      <div class="stat-label">Voicemail</div>
+      <div class="stat-value">{{ recent_logs | selectattr("status", "equalto", "VOICEMAIL") | list | length }}</div>
+    </div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-icon stat-icon--slate">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="24" height="24">
+        <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/>
+        <polyline points="13 2 13 9 20 9"/>
+      </svg>
+    </div>
+    <div class="stat-body">
+      <div class="stat-label">Run Status</div>
+      <div class="stat-value stat-value--status" id="dashRunStatus">{{ run_state.status | upper }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- Recent calls table -->
+<div class="panel">
+  <div class="panel-header">
+    <h3 class="panel-title">Recent Calls</h3>
+    <a href="/logs" class="link-muted">View all →</a>
+  </div>
+  {% if recent_logs %}
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Name</th>
+          <th>Phone</th>
+          <th>Status</th>
+          <th>Duration</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in recent_logs %}
+        <tr>
+          <td class="td-mono">{{ row.timestamp }}</td>
+          <td>{{ row.name }}</td>
+          <td class="td-mono">{{ row.phone }}</td>
+          <td><span class="badge badge--{{ row.status | lower }}">{{ row.status }}</span></td>
+          <td class="td-mono">{{ "%.1fs" | format(row.connected_duration_s | float) if row.connected_duration_s else "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">No call logs yet. <a href="/run">Start a run</a> to see results here.</div>
+  {% endif %}
+</div>
+{% endblock %}

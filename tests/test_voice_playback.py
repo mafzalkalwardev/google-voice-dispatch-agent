@@ -6,6 +6,7 @@ from src.voice_playback import (
     list_audio_devices,
     find_loopback_devices,
     find_loopback_device,
+    find_playable_loopback_device,
     play_wav_to_device,
     play_wav_loopback,
 )
@@ -75,6 +76,15 @@ def test_find_loopback_device_ignores_input_only():
     with patch("src.voice_playback.list_audio_devices", return_value=_fake_device_list()):
         idx = find_loopback_device("CABLE Output")
     assert idx is None
+
+
+def test_find_playable_loopback_device_skips_unavailable_match():
+    with patch("src.voice_playback.find_loopback_devices", return_value=[6, 16]):
+        with patch("src.voice_playback.probe_output_device") as mock_probe:
+            mock_probe.side_effect = [(False, "busy"), (True, "ok")]
+            idx = find_playable_loopback_device("CABLE Input")
+
+    assert idx == 16
 
 
 # ---- play_wav_to_device ----

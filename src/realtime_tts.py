@@ -99,11 +99,24 @@ class RealtimeTTS:
         if self._use_edge:
             try:
                 data, rate = _edge_synthesize(text, self.voice)
+            except Exception as exc:
+                logger.warning("edge-tts synthesis failed (%s); falling back to pyttsx3", exc)
+            else:
                 _play_numpy_to_device(data, rate, self.device_index)
                 return
-            except Exception as exc:
-                logger.warning("edge-tts failed (%s); falling back to pyttsx3", exc)
         _pyttsx3_to_device(text, self.device_index)
+
+
+def validate_tts_output_device(device_index: int) -> None:
+    """Raise a clear error if the configured output device cannot be opened."""
+    from src.voice_playback import probe_output_device
+
+    ok, detail = probe_output_device(device_index)
+    if not ok:
+        raise RuntimeError(
+            f"TTS output device [{device_index}] is unavailable: {detail}. "
+            "Pick a playable CABLE Input/output device from the Audio Devices page."
+        )
 
 
 # ------------------------------------------------------------------ #

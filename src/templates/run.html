@@ -1,0 +1,334 @@
+{% extends "base.html" %}
+{% set active_page = "run" %}
+
+{% block title %}Live Run — INDUS TRANSPORTS LLC{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Live Run Console</h2>
+  <p class="page-sub">Start, monitor, and stop the dispatch agent</p>
+</div>
+
+<!-- Compliance warning -->
+<div class="compliance-banner">
+  <div class="compliance-icon">⚖</div>
+  <div class="compliance-text">
+    <strong>Legal Compliance Notice</strong><br>
+    You are responsible for complying with TCPA, FDCPA, DNC Registry rules, state call-recording laws,
+    Google Voice Terms of Service, and all other applicable regulations before dialing.
+    Do not call numbers on federal or state Do-Not-Call lists without express written consent.
+    Obtain required consent for recording. Indus Transports LLC does not guarantee legal compliance
+    on your behalf. By starting a run, you accept full legal responsibility.
+  </div>
+</div>
+
+<!-- Run controls -->
+<div class="panel">
+  <div class="panel-header">
+    <h3 class="panel-title">Run Controls</h3>
+    <span class="status-pill" id="runStatusPill">{{ run_state.status | upper }}</span>
+  </div>
+
+  <div class="run-grid">
+    <!-- Params -->
+    <div class="run-params">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Contacts File</label>
+          <input type="text" id="rContacts" value="{{ cfg.contacts_file or 'data/contacts.xlsx' }}" />
+        </div>
+        <div class="form-group">
+          <label>Chrome Profile</label>
+          <input type="text" id="rProfile" value="{{ cfg.profile_name or 'sales_profile' }}" />
+        </div>
+        <div class="form-group">
+          <label>Max Calls (limit)</label>
+          <input type="number" id="rLimit" value="10" min="1" max="500" />
+        </div>
+        <div class="form-group">
+          <label>Callback Number</label>
+          <input type="text" id="rCallback" value="{{ cfg.callback_number or '' }}" placeholder="+15551234567" />
+        </div>
+        <div class="form-group">
+          <label>Loopback Device</label>
+          <input type="text" id="rLoopback" value="{{ cfg.loopback_device or 'CABLE Input' }}" />
+        </div>
+        <div class="form-group">
+          <label>Capture Device</label>
+          <input type="text" id="rCapture" value="{{ cfg.capture_device or 'default' }}" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Buttons -->
+    <div class="run-buttons">
+      <button class="btn btn-success run-btn" id="btnStart" onclick="confirmAndStart()">
+        ▶ Start Live Run
+      </button>
+      <button class="btn btn-amber run-btn" id="btnDryRun" onclick="startDryRun()">
+        ⚙ Dry Run (no dial)
+      </button>
+      <button class="btn btn-danger run-btn" id="btnStop" onclick="stopRun()" disabled>
+        ■ Stop Run
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- State cards -->
+<div class="state-cards" id="stateCards">
+  <div class="state-card" id="sc-idle">
+    <div class="state-card-label">IDLE</div>
+  </div>
+  <div class="state-card" id="sc-dialing">
+    <div class="state-card-label">DIALING</div>
+  </div>
+  <div class="state-card" id="sc-ringing">
+    <div class="state-card-label">RINGING</div>
+  </div>
+  <div class="state-card" id="sc-connected">
+    <div class="state-card-label">CONNECTED</div>
+  </div>
+  <div class="state-card" id="sc-voicemail">
+    <div class="state-card-label">VOICEMAIL</div>
+  </div>
+  <div class="state-card" id="sc-ended">
+    <div class="state-card-label">ENDED</div>
+  </div>
+  <div class="state-card" id="sc-failed">
+    <div class="state-card-label">FAILED</div>
+  </div>
+</div>
+
+<!-- Live log -->
+<div class="panel">
+  <div class="panel-header">
+    <h3 class="panel-title">Live Output</h3>
+    <div style="display:flex;gap:.5rem;align-items:center">
+      <label style="font-size:.8rem;color:var(--muted)">
+        <input type="checkbox" id="autoScrollChk" checked /> Auto-scroll
+      </label>
+      <button class="btn btn-ghost btn-sm" onclick="clearLog()">Clear</button>
+    </div>
+  </div>
+  <div class="log-viewer" id="liveLog"><span class="log-idle">Waiting for run…</span></div>
+</div>
+
+<!-- Compliance confirm modal -->
+<div id="complianceModal" class="modal-backdrop" style="display:none">
+  <div class="modal">
+    <h3 class="modal-title">Confirm Live Dial</h3>
+    <p>By clicking <strong>I Accept &amp; Start</strong>, you confirm that:</p>
+    <ul class="modal-list">
+      <li>You have reviewed all contacts and hold required consent to call them.</li>
+      <li>No contacted numbers appear on federal or state DNC registries without written consent.</li>
+      <li>You comply with TCPA, state telemarketing laws, and Google Voice Terms of Service.</li>
+      <li>You are solely responsible for legal compliance and any resulting liability.</li>
+    </ul>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="doStart()">I Accept &amp; Start</button>
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let sseSource = null;
+let logIndex = 0;
+
+function buildParams(dryRun) {
+  return {
+    contacts_file: document.getElementById('rContacts').value,
+    profile_name:  document.getElementById('rProfile').value,
+    limit:         parseInt(document.getElementById('rLimit').value) || 10,
+    callback_number: document.getElementById('rCallback').value,
+    loopback_device: document.getElementById('rLoopback').value,
+    capture_device:  document.getElementById('rCapture').value,
+    dry_run: dryRun,
+  };
+}
+
+function confirmAndStart() {
+  document.getElementById('complianceModal').style.display = 'flex';
+}
+
+function closeModal() {
+  document.getElementById('complianceModal').style.display = 'none';
+}
+
+async function doStart() {
+  closeModal();
+  await startRun(false);
+}
+
+async function startDryRun() {
+  await startRun(true);
+}
+
+async function startRun(dryRun) {
+  const r = await fetch('/api/run/start', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(buildParams(dryRun)),
+  });
+  const data = await r.json();
+  if (!data.ok) {
+    appendLog('[ERROR] ' + (data.error || 'Start failed'));
+    return;
+  }
+  appendLog('[INFO] Run started (PID ' + data.pid + ')' + (dryRun ? ' [DRY RUN]' : ''));
+  setRunningUI(true);
+  startSSE();
+}
+
+async function stopRun() {
+  const r = await fetch('/api/run/stop', { method: 'POST' });
+  const data = await r.json();
+  appendLog('[INFO] Stop requested: ' + data.message);
+}
+
+function startSSE() {
+  if (sseSource) sseSource.close();
+  logIndex = document.getElementById('liveLog').querySelectorAll('.log-line').length;
+  sseSource = new EventSource('/api/run/stream?since=' + logIndex);
+  sseSource.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.done) {
+      appendLog('[INFO] Run finished — status: ' + msg.state.status);
+      setRunningUI(false);
+      sseSource.close();
+      sseSource = null;
+      return;
+    }
+    if (msg.heartbeat) {
+      updateStatusPill(msg.state.status);
+      updateStateCards(msg.state.status);
+      return;
+    }
+    if (msg.line !== undefined) {
+      appendLog(msg.line);
+      detectState(msg.line);
+    }
+  };
+  sseSource.onerror = () => {
+    appendLog('[WARN] SSE connection dropped — polling…');
+    sseSource.close();
+    sseSource = null;
+    pollStatus();
+  };
+}
+
+function pollStatus() {
+  setTimeout(async () => {
+    const r = await fetch('/api/run/status');
+    const state = await r.json();
+    updateStatusPill(state.status);
+    updateStateCards(state.status);
+    if (state.is_running) {
+      // Fetch new lines
+      const lr = await fetch('/api/run/lines?since=' + logIndex);
+      const ld = await lr.json();
+      ld.lines.forEach(l => appendLog(l));
+      logIndex = ld.next_index;
+      pollStatus();
+    } else {
+      setRunningUI(false);
+    }
+  }, 1500);
+}
+
+function appendLog(text) {
+  const viewer = document.getElementById('liveLog');
+  const idle = viewer.querySelector('.log-idle');
+  if (idle) idle.remove();
+
+  const line = document.createElement('div');
+  line.className = 'log-line';
+
+  // Colour-code by keywords
+  let cls = '';
+  const l = text.toLowerCase();
+  if (l.includes('error') || l.includes('failed') || l.includes('fail')) cls = 'log-error';
+  else if (l.includes('warn')) cls = 'log-warn';
+  else if (l.includes('connected') || l.includes('dialing') || l.includes('ringing')) cls = 'log-active';
+  else if (l.includes('voicemail')) cls = 'log-voicemail';
+  else if (l.includes('ended') || l.includes('complete') || l.includes('done')) cls = 'log-done';
+
+  if (cls) line.classList.add(cls);
+  line.textContent = text;
+  viewer.appendChild(line);
+
+  if (document.getElementById('autoScrollChk').checked) {
+    viewer.scrollTop = viewer.scrollHeight;
+  }
+}
+
+const STATE_KEYWORDS = {
+  'dialing': 'sc-dialing',
+  'ringing': 'sc-ringing',
+  'connected': 'sc-connected',
+  'voicemail': 'sc-voicemail',
+  'ended': 'sc-ended',
+  'failed': 'sc-failed',
+};
+
+function detectState(line) {
+  const l = line.toLowerCase();
+  for (const [kw, cardId] of Object.entries(STATE_KEYWORDS)) {
+    if (l.includes(kw)) {
+      highlightStateCard(cardId);
+    }
+  }
+}
+
+function highlightStateCard(activeId) {
+  document.querySelectorAll('.state-card').forEach(c => c.classList.remove('state-card--active'));
+  const el = document.getElementById(activeId);
+  if (el) el.classList.add('state-card--active');
+}
+
+function updateStateCards(status) {
+  const map = {
+    'running': 'sc-idle', 'idle': 'sc-idle',
+    'stopping': 'sc-ended', 'stopped': 'sc-ended',
+    'completed': 'sc-ended', 'failed': 'sc-failed',
+  };
+  if (map[status]) highlightStateCard(map[status]);
+}
+
+function updateStatusPill(status) {
+  const pill = document.getElementById('runStatusPill');
+  if (!pill) return;
+  pill.textContent = status.toUpperCase();
+  pill.className = 'status-pill status-pill--' + status;
+}
+
+function setRunningUI(running) {
+  document.getElementById('btnStart').disabled = running;
+  document.getElementById('btnDryRun').disabled = running;
+  document.getElementById('btnStop').disabled = !running;
+  const badge = document.getElementById('globalRunBadge');
+  if (badge) badge.style.display = running ? 'inline-block' : 'none';
+  updateStatusPill(running ? 'running' : 'idle');
+}
+
+function clearLog() {
+  document.getElementById('liveLog').innerHTML = '<span class="log-idle">Waiting for run…</span>';
+  logIndex = 0;
+}
+
+// On page load: sync UI with current status
+(async () => {
+  const r = await fetch('/api/run/status');
+  const state = await r.json();
+  updateStatusPill(state.status);
+  updateStateCards(state.status);
+  if (state.is_running) {
+    setRunningUI(true);
+    startSSE();
+  }
+})();
+</script>
+{% endblock %}

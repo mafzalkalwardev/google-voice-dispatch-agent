@@ -6,6 +6,8 @@ import threading
 import time
 from pathlib import Path
 
+from selenium.common.exceptions import WebDriverException
+
 from src.call_log import CallLogger
 from src.call_session import CallSession, CallState
 from src.config import Config
@@ -14,7 +16,7 @@ from src.google_voice import GoogleVoiceBrowser
 from src.ai_groq import GroqAgent
 from src.logger import setup_logger
 from src.tts import save_text_to_speech, ensure_audio_dir
-from src.voice_playback import play_wav_loopback, find_loopback_device, print_devices
+from src.voice_playback import play_wav_loopback, find_playable_loopback_device, print_devices
 
 
 def _parse_args() -> argparse.Namespace:
@@ -56,7 +58,27 @@ def _parse_args() -> argparse.Namespace:
                    help="edge-tts voice name for realtime mode (default from config)")
     p.add_argument("--list-audio-devices", action="store_true",
                    help="Print sounddevice audio devices and exit")
+    p.add_argument("--preflight", action="store_true",
+                   help="Run readiness checks and exit without dialing")
     return p.parse_args()
+
+
+def _run_preflight(cfg: Config) -> int:
+    from src.preflight import run_all
+
+    results = run_all(
+        groq_api_key=cfg.groq_api_key,
+        contacts_file=cfg.contacts_file,
+        profile_name=cfg.profile_name,
+        loopback_device=cfg.loopback_device,
+    )
+    worst = 0
+    for result in results:
+        status = result.status.upper()
+        if result.status == "fail":
+            worst = 1
+        print(f"[{status:4}] {result.name}: {result.message}")
+    return worst
 
 
 def _run_call(
@@ -146,8 +168,10 @@ def _run_call(
         logger.warning("[%d] Dial failed for %s", index, phone)
         return
 
-    # ---- Poll for CONNECTED or VOICEMAIL ----
-    final_state = browser.detect_call_state(session, timeout=float(call_max_duration))
+    # ---- Poll for ANSWERED or VOICEMAIL ----
+    # Google Voice shows a hangup button while an outbound call is only ringing,
+    # so this wait must use real answer evidence and the shorter answer timeout.
+    final_state = browser.detect_call_state(session, timeout=float(call_timeout))
 
     if final_state == CallState.CONNECTED:
         if realtime and loopback_device_index is not None:
@@ -201,6 +225,8 @@ def _run_call(
 
     elif final_state in (CallState.ENDED, CallState.FAILED):
         logger.info("[%d] Call ended/failed before playback for %s", index, phone)
+        if final_state == CallState.FAILED and browser.is_call_active():
+            browser.hangup_call()
 
     session.outcome = session.state.value
     call_logger.log_session(session)
@@ -234,30 +260,39 @@ def _run_realtime_loop(
 ) -> None:
     from src.conversation_agent import ConversationAgent
     from src.conversation_loop import ConversationLoop
-    from src.realtime_tts import RealtimeTTS
+    from src.realtime_tts import RealtimeTTS, validate_tts_output_device
     from src.stt import GroqWhisperSTT
     from src.vad import VADConfig
 
-    tts = RealtimeTTS(device_index=loopback_device_index, voice=tts_voice)
-    agent = ConversationAgent(
-        api_key=groq_api_key,
-        model=groq_model,
-        agent_name=agent_name,
-        company_name=company_name,
-        company_context=company_context,
-        company_website=company_website,
-        callback_number=callback_number,
-        contact_name=contact_name,
-    )
-    stt = GroqWhisperSTT(api_key=groq_api_key, model=stt_model)
-    vad_cfg = VADConfig(speech_threshold=vad_threshold)
-    loop = ConversationLoop(
-        capture_device_hint=capture_device,
-        tts=tts,
-        agent=agent,
-        stt=stt,
-        vad_config=vad_cfg,
-    )
+    try:
+        validate_tts_output_device(loopback_device_index)
+        tts = RealtimeTTS(device_index=loopback_device_index, voice=tts_voice)
+        agent = ConversationAgent(
+            api_key=groq_api_key,
+            model=groq_model,
+            agent_name=agent_name,
+            company_name=company_name,
+            company_context=company_context,
+            company_website=company_website,
+            callback_number=callback_number,
+            contact_name=contact_name,
+        )
+        stt = GroqWhisperSTT(api_key=groq_api_key, model=stt_model)
+        vad_cfg = VADConfig(speech_threshold=vad_threshold)
+        loop = ConversationLoop(
+            capture_device_hint=capture_device,
+            tts=tts,
+            agent=agent,
+            stt=stt,
+            vad_config=vad_cfg,
+        )
+    except Exception as exc:
+        logger.error("Realtime setup error: %s", exc)
+        if browser.is_call_active():
+            browser.hangup_call()
+        if not session.is_terminal():
+            session.transition(CallState.FAILED, f"realtime setup error: {exc}")
+        return
     monitor_stop = threading.Event()
     monitor = threading.Thread(
         target=_monitor_live_call,
@@ -267,6 +302,8 @@ def _run_realtime_loop(
     )
     monitor.start()
     try:
+        logger.info("Answered call confirmed; waiting briefly before opening line.")
+        time.sleep(1.5)
         loop.run(session=session, auto_opening=True)
     except Exception as exc:
         logger.error("Realtime loop error: %s", exc)
@@ -342,6 +379,9 @@ def main() -> None:
         return
 
     cfg = Config.load()
+    if args.preflight:
+        raise SystemExit(_run_preflight(cfg))
+
     cfg.validate()
     logger = setup_logger()
     call_logger = CallLogger()
@@ -378,7 +418,7 @@ def main() -> None:
     script_dir.mkdir(parents=True, exist_ok=True)
     voicemail_dir.mkdir(parents=True, exist_ok=True)
 
-    loopback_device_index = find_loopback_device(loopback_device)
+    loopback_device_index = find_playable_loopback_device(loopback_device)
     loopback_available = loopback_device_index is not None
     if not loopback_available:
         logger.warning(
@@ -431,22 +471,29 @@ def main() -> None:
 
     try:
         for i, contact in enumerate(contacts[: args.limit], start=1):
-            _run_call(
-                contact, i, browser, ai, call_logger, logger,
-                script_dir, voicemail_dir,
-                args.objective, args.offer,
-                callback_number,
-                agent_name, company_name, company_context, company_website,
-                loopback_device, loopback_device_index, loopback_available,
-                call_timeout, call_max_duration,
-                dry_run=False,
-                realtime=args.realtime,
-                capture_device=capture_device,
-                tts_voice=tts_voice,
-                stt_model=cfg.stt_model,
-                vad_threshold=cfg.vad_threshold,
-                groq_api_key=cfg.groq_api_key,
-            )
+            try:
+                _run_call(
+                    contact, i, browser, ai, call_logger, logger,
+                    script_dir, voicemail_dir,
+                    args.objective, args.offer,
+                    callback_number,
+                    agent_name, company_name, company_context, company_website,
+                    loopback_device, loopback_device_index, loopback_available,
+                    call_timeout, call_max_duration,
+                    dry_run=False,
+                    realtime=args.realtime,
+                    capture_device=capture_device,
+                    tts_voice=tts_voice,
+                    stt_model=cfg.stt_model,
+                    vad_threshold=cfg.vad_threshold,
+                    groq_api_key=cfg.groq_api_key,
+                )
+            except WebDriverException as exc:
+                logger.error("Chrome/Google Voice session ended; stopping call loop: %s", exc)
+                break
+            if browser.driver is None:
+                logger.error("Chrome/Google Voice session is no longer available; stopping call loop.")
+                break
             time.sleep(2)  # brief pause between calls
     finally:
         browser.close()

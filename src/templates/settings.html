@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% set active_page = "settings" %}
+
+{% block title %}Settings — INDUS TRANSPORTS LLC{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2 class="page-title">Settings</h2>
+  <p class="page-sub">Configure profiles, audio, API models, and call parameters</p>
+</div>
+
+<div id="saveAlert" class="alert alert-success" style="display:none">Settings saved.</div>
+<div id="saveError" class="alert alert-error" style="display:none"></div>
+
+<form id="settingsForm" onsubmit="saveSettings(event)">
+
+  <!-- Identity -->
+  <div class="panel">
+    <div class="panel-header"><h3 class="panel-title">Identity &amp; Contact</h3></div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Agent Name</label>
+        <input type="text" name="agent_name" value="{{ cfg.agent_name or 'Tony' }}" />
+      </div>
+      <div class="form-group">
+        <label>Company Name</label>
+        <input type="text" name="company_name" value="{{ cfg.company_name or 'Indus Transports LLC' }}" />
+      </div>
+      <div class="form-group">
+        <label>Company Website</label>
+        <input type="url" name="company_website" value="{{ cfg.company_website or '' }}" />
+      </div>
+      <div class="form-group">
+        <label>Callback Number <span class="label-hint">(spoken in voicemails)</span></label>
+        <input type="text" name="callback_number" value="{{ cfg.callback_number or '' }}" placeholder="+15551234567" />
+      </div>
+      <div class="form-group form-group--wide">
+        <label>Company Context <span class="label-hint">(fed to AI script generator)</span></label>
+        <textarea name="company_context" rows="4">{{ cfg.company_context or '' }}</textarea>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chrome -->
+  <div class="panel">
+    <div class="panel-header"><h3 class="panel-title">Chrome Profile</h3></div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Profile Name <span class="label-hint">(folder inside chrome_profiles/)</span></label>
+        <input type="text" name="profile_name" value="{{ cfg.profile_name or 'sales_profile' }}" />
+      </div>
+      <div class="form-group">
+        <label>Contacts File Path</label>
+        <input type="text" name="contacts_file" value="{{ cfg.contacts_file or 'data/contacts.xlsx' }}" />
+        <div class="field-hint">Use the <a href="/contacts">Contacts</a> page to upload a new file.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Models -->
+  <div class="panel">
+    <div class="panel-header"><h3 class="panel-title">AI Models</h3></div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Groq LLM Model</label>
+        <input type="text" name="groq_model" value="{{ cfg.groq_model or 'llama-3.3-70b-versatile' }}" />
+        <div class="field-hint">e.g. llama-3.3-70b-versatile · llama-3.1-8b-instant</div>
+      </div>
+      <div class="form-group">
+        <label>STT Model (Whisper)</label>
+        <input type="text" name="stt_model" value="{{ cfg.stt_model or 'whisper-large-v3-turbo' }}" />
+      </div>
+      <div class="form-group">
+        <label>TTS Voice (edge-tts)</label>
+        <input type="text" name="tts_voice" value="{{ cfg.tts_voice or 'en-US-GuyNeural' }}" />
+        <div class="field-hint">e.g. en-US-GuyNeural · en-US-JennyNeural</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Audio -->
+  <div class="panel">
+    <div class="panel-header">
+      <h3 class="panel-title">Audio Routing</h3>
+      <a href="/audio" class="link-muted">Browse devices →</a>
+    </div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Loopback Device <span class="label-hint">(TTS → Chrome mic)</span></label>
+        <input type="text" name="loopback_device" value="{{ cfg.loopback_device or 'CABLE Input' }}" />
+        <div class="field-hint">Must be an output device. Install VB-CABLE if missing.</div>
+      </div>
+      <div class="form-group">
+        <label>Capture Device <span class="label-hint">(prospect audio)</span></label>
+        <input type="text" name="capture_device" value="{{ cfg.capture_device or 'default' }}" />
+        <div class="field-hint">"default" = WASAPI loopback on system speaker (single-cable setup)</div>
+      </div>
+      <div class="form-group">
+        <label>VAD Threshold <span class="label-hint">(0.005 – 0.1)</span></label>
+        <input type="number" name="vad_threshold" value="{{ cfg.vad_threshold or 0.015 }}" step="0.001" min="0.001" max="0.5" />
+      </div>
+    </div>
+  </div>
+
+  <!-- Call timing -->
+  <div class="panel">
+    <div class="panel-header"><h3 class="panel-title">Call Timing</h3></div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Connect Timeout <span class="label-hint">(seconds to wait for answer)</span></label>
+        <input type="number" name="call_timeout" value="{{ cfg.call_timeout or 30 }}" min="5" max="120" />
+      </div>
+      <div class="form-group">
+        <label>Max Call Duration <span class="label-hint">(seconds before force-hangup)</span></label>
+        <input type="number" name="call_max_duration" value="{{ cfg.call_max_duration or 90 }}" min="30" max="600" />
+      </div>
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">Save Settings</button>
+    <span class="form-actions-hint">Saved to <code>dialer_config.json</code> — env vars in <code>.env</code> take precedence at runtime.</span>
+  </div>
+
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function saveSettings(e) {
+  e.preventDefault();
+  const form = document.getElementById('settingsForm');
+  const data = Object.fromEntries(new FormData(form).entries());
+  const alert = document.getElementById('saveAlert');
+  const errEl = document.getElementById('saveError');
+  alert.style.display = 'none';
+  errEl.style.display = 'none';
+
+  try {
+    const resp = await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data),
+    });
+    const result = await resp.json();
+    if (result.ok) {
+      alert.style.display = 'block';
+      setTimeout(() => alert.style.display = 'none', 3000);
+    } else {
+      errEl.textContent = result.error || 'Save failed';
+      errEl.style.display = 'block';
+    }
+  } catch (err) {
+    errEl.textContent = err.message;
+    errEl.style.display = 'block';
+  }
+}
+</script>
+{% endblock %}

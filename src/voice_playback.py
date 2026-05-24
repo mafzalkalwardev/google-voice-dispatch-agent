@@ -57,6 +57,43 @@ def find_loopback_device(name_hint: str = "CABLE Input") -> Optional[int]:
     return None
 
 
+def probe_output_device(device_index: int, duration_s: float = 0.03) -> tuple[bool, str]:
+    """
+    Open an output stream and write a tiny silent buffer.
+    This catches "device unavailable" before the app starts dialing.
+    """
+    try:
+        import numpy as np
+        import sounddevice as sd
+
+        device = sd.query_devices(device_index)
+        channels = max(1, min(int(device.get("max_output_channels") or 1), 2))
+        samplerate = int(device.get("default_samplerate") or 44100)
+        frames = max(1, int(samplerate * duration_s))
+        silence = np.zeros((frames, channels), dtype="float32")
+        with sd.OutputStream(
+            device=device_index,
+            samplerate=samplerate,
+            channels=channels,
+            dtype="float32",
+        ) as stream:
+            stream.write(silence)
+        return True, f"device [{device_index}] opened at {samplerate} Hz"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def find_playable_loopback_device(name_hint: str = "CABLE Input") -> Optional[int]:
+    """Return the first matching output device that can actually be opened."""
+    for device_index in find_loopback_devices(name_hint):
+        ok, detail = probe_output_device(device_index)
+        if ok:
+            logger.info("Loopback device ready: %s", detail)
+            return device_index
+        logger.warning("Loopback device [%d] is not playable: %s", device_index, detail)
+    return None
+
+
 def _device_default_samplerate(sd, device_index: int, fallback: int) -> int:
     try:
         device = sd.query_devices(device_index)
