@@ -3,6 +3,18 @@
 (function () {
   'use strict';
 
+  // ── Topbar clock ─────────────────────────────────────────────────────────
+  function startClock() {
+    const el = document.getElementById('topbarClock');
+    if (!el) return;
+    function tick() {
+      const now = new Date();
+      el.textContent = now.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+    tick();
+    setInterval(tick, 1000);
+  }
+
   // ── Global run-status badge ──────────────────────────────────────────────
   async function pollGlobalStatus() {
     try {
@@ -32,5 +44,8 @@
     setTimeout(pollGlobalStatus, 4000);
   }
 
-  document.addEventListener('DOMContentLoaded', pollGlobalStatus);
+  document.addEventListener('DOMContentLoaded', () => {
+    startClock();
+    pollGlobalStatus();
+  });
 })();

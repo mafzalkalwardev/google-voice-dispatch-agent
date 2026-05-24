@@ -5,12 +5,14 @@
 
 {% block content %}
 <div class="page-header">
-  <h2 class="page-title">Settings</h2>
-  <p class="page-sub">Configure profiles, audio, API models, and call parameters</p>
+  <div class="page-header-left">
+    <h2 class="page-title">Settings</h2>
+    <p class="page-sub">Configure profiles, audio, API models, and call parameters</p>
+  </div>
 </div>
 
-<div id="saveAlert" class="alert alert-success" style="display:none">Settings saved.</div>
-<div id="saveError" class="alert alert-error" style="display:none"></div>
+<div id="saveAlert" class="alert alert-success" style="display:none;margin-bottom:1rem">Settings saved.</div>
+<div id="saveError" class="alert alert-error" style="display:none;margin-bottom:1rem"></div>
 
 <form id="settingsForm" onsubmit="saveSettings(event)">
 

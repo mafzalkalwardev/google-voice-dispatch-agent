@@ -5,17 +5,19 @@
 
 {% block content %}
 <div class="page-header">
-  <h2 class="page-title">Call Logs</h2>
-  <p class="page-sub">History from <code>logs/call_logs.csv</code></p>
+  <div class="page-header-left">
+    <h2 class="page-title">Call Logs</h2>
+    <p class="page-sub">History from <code>logs/call_logs.csv</code></p>
+  </div>
 </div>
 
 <div class="panel">
   <div class="panel-header">
     <h3 class="panel-title">Recent Calls</h3>
-    <div style="display:flex;gap:.5rem">
+    <div style="display:flex;gap:.5rem;align-items:center">
       <input type="text" id="logSearch" placeholder="Filter by name, phone, status…"
-             oninput="filterLogs()" style="width:220px;padding:.35rem .6rem" />
-      <button class="btn btn-secondary" onclick="location.reload()">Refresh</button>
+             oninput="filterLogs()" class="log-filter-input" />
+      <button class="btn btn-secondary btn-sm" onclick="location.reload()">Refresh</button>
     </div>
   </div>
 

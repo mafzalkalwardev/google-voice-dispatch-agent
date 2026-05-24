@@ -714,6 +714,19 @@ code, kbd {
 
 .field-hint { font-size: .72rem; color: var(--muted); }
 
+.check-row {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: .45rem;
+  font-size: .82rem !important;
+  color: var(--text) !important;
+}
+
+.check-row input {
+  width: auto;
+}
+
 .form-actions {
   padding: .85rem 1.25rem;
   border-top: 1px solid var(--border);
@@ -1081,6 +1094,24 @@ code, kbd {
 
 /* Inline separator */
 .sep { color: var(--gray-300); margin: 0 .35rem; }
+
+/* Inline filter input (panel header search box) */
+.log-filter-input {
+  padding: .3rem .6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: .8rem;
+  color: var(--text);
+  background: var(--surface);
+  font-family: inherit;
+  width: 220px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.log-filter-input:focus {
+  outline: none;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(59,130,246,.12);
+}
 
 /* Field info row */
 .field-info {

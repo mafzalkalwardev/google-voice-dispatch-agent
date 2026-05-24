@@ -5,8 +5,10 @@
 
 {% block content %}
 <div class="page-header">
-  <h2 class="page-title">Live Run Console</h2>
-  <p class="page-sub">Start, monitor, and stop the dispatch agent</p>
+  <div class="page-header-left">
+    <h2 class="page-title">Live Run Console</h2>
+    <p class="page-sub">Start, monitor, and stop the dispatch agent</p>
+  </div>
 </div>
 
 <!-- Compliance warning -->
@@ -75,6 +77,41 @@
   </div>
 </div>
 
+<!-- Single test call -->
+<div class="panel">
+  <div class="panel-header">
+    <h3 class="panel-title">Single Test Call</h3>
+  </div>
+
+  <div class="run-grid">
+    <div class="run-params">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Phone Number</label>
+          <input type="text" id="singlePhone" placeholder="+15551234567" />
+        </div>
+        <div class="form-group">
+          <label>Contact / Company Name</label>
+          <input type="text" id="singleName" placeholder="Test Carrier" />
+        </div>
+        <div class="form-group">
+          <label>Mode</label>
+          <label class="check-row">
+            <input type="checkbox" id="singleDryRun" />
+            Dry run only
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="run-buttons">
+      <button class="btn btn-primary run-btn" id="btnSingleCall" onclick="confirmSingleCall()">
+        Start Single Test Call
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- State cards -->
 <div class="state-cards" id="stateCards">
   <div class="state-card" id="sc-idle">
@@ -131,6 +168,18 @@
     </div>
   </div>
 </div>
+
+<!-- Single test call confirm modal -->
+<div id="singleCallModal" class="modal-backdrop" style="display:none">
+  <div class="modal">
+    <h3 class="modal-title">Confirm Single Live Test</h3>
+    <p>By clicking <strong>I Accept &amp; Dial One Number</strong>, you confirm that this number may be called now and that you accept responsibility for legal compliance.</p>
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="doSingleCall()">I Accept &amp; Dial One Number</button>
+      <button class="btn btn-ghost" onclick="closeSingleCallModal()">Cancel</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -147,6 +196,18 @@ function buildParams(dryRun) {
     loopback_device: document.getElementById('rLoopback').value,
     capture_device:  document.getElementById('rCapture').value,
     dry_run: dryRun,
+  };
+}
+
+function buildSingleParams() {
+  return {
+    phone: document.getElementById('singlePhone').value,
+    name: document.getElementById('singleName').value,
+    profile_name: document.getElementById('rProfile').value,
+    callback_number: document.getElementById('rCallback').value,
+    loopback_device: document.getElementById('rLoopback').value,
+    capture_device: document.getElementById('rCapture').value,
+    dry_run: document.getElementById('singleDryRun').checked,
   };
 }
 
@@ -167,6 +228,30 @@ async function startDryRun() {
   await startRun(true);
 }
 
+function confirmSingleCall() {
+  const phoneInput = document.getElementById('singlePhone');
+  const phone = phoneInput.value.trim();
+  if (!phone) {
+    appendLog('[ERROR] Enter a phone number for the single test call.');
+    phoneInput.focus();
+    return;
+  }
+  if (document.getElementById('singleDryRun').checked) {
+    startSingleCall();
+    return;
+  }
+  document.getElementById('singleCallModal').style.display = 'flex';
+}
+
+function closeSingleCallModal() {
+  document.getElementById('singleCallModal').style.display = 'none';
+}
+
+async function doSingleCall() {
+  closeSingleCallModal();
+  await startSingleCall();
+}
+
 async function startRun(dryRun) {
   const r = await fetch('/api/run/start', {
     method: 'POST',
@@ -179,6 +264,23 @@ async function startRun(dryRun) {
     return;
   }
   appendLog('[INFO] Run started (PID ' + data.pid + ')' + (dryRun ? ' [DRY RUN]' : ''));
+  setRunningUI(true);
+  startSSE();
+}
+
+async function startSingleCall() {
+  const params = buildSingleParams();
+  const r = await fetch('/api/run/single-call', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(params),
+  });
+  const data = await r.json();
+  if (!r.ok || !data.ok) {
+    appendLog('[ERROR] ' + (data.detail || data.error || 'Single test call start failed'));
+    return;
+  }
+  appendLog('[INFO] Single test call started (PID ' + data.pid + ') for ' + data.phone + (params.dry_run ? ' [DRY RUN]' : ''));
   setRunningUI(true);
   startSSE();
 }
@@ -248,16 +350,18 @@ function appendLog(text) {
   line.className = 'log-line';
 
   // Colour-code by keywords
-  let cls = '';
   const l = text.toLowerCase();
-  if (l.includes('error') || l.includes('failed') || l.includes('fail')) cls = 'log-error';
-  else if (l.includes('warn')) cls = 'log-warn';
-  else if (l.includes('connected') || l.includes('dialing') || l.includes('ringing')) cls = 'log-active';
-  else if (l.includes('voicemail')) cls = 'log-voicemail';
-  else if (l.includes('ended') || l.includes('complete') || l.includes('done')) cls = 'log-done';
+  if (l.includes('error') || l.includes('failed') || l.includes('fail')) line.classList.add('log-error');
+  else if (l.includes('warn')) line.classList.add('log-warn');
+  else if (l.includes('connected') || l.includes('dialing') || l.includes('ringing')) line.classList.add('log-active');
+  else if (l.includes('voicemail')) line.classList.add('log-voicemail');
+  else if (l.includes('ended') || l.includes('complete') || l.includes('done')) line.classList.add('log-done');
 
-  if (cls) line.classList.add(cls);
-  line.textContent = text;
+  const ts = document.createElement('span');
+  ts.className = 'log-ts';
+  ts.textContent = new Date().toLocaleTimeString('en-US', { hour12: false });
+  line.appendChild(ts);
+  line.appendChild(document.createTextNode(text));
   viewer.appendChild(line);
 
   if (document.getElementById('autoScrollChk').checked) {
@@ -308,6 +412,7 @@ function updateStatusPill(status) {
 function setRunningUI(running) {
   document.getElementById('btnStart').disabled = running;
   document.getElementById('btnDryRun').disabled = running;
+  document.getElementById('btnSingleCall').disabled = running;
   document.getElementById('btnStop').disabled = !running;
   const badge = document.getElementById('globalRunBadge');
   if (badge) badge.style.display = running ? 'inline-block' : 'none';

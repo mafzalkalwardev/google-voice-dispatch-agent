@@ -280,6 +280,54 @@ def _get_contacts_preview(contacts_file: Optional[str] = None) -> dict:
         return {"rows": [], "total": 0, "error": str(exc)}
 
 
+def _normalize_phone_number(raw_phone: object) -> str:
+    raw = str(raw_phone or "").strip()
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if len(digits) < 7 or len(digits) > 15:
+        return ""
+    if raw.startswith("+"):
+        return f"+{digits}"
+    if len(digits) == 10:
+        return f"+1{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+    return f"+{digits}"
+
+
+def _write_single_call_contacts(phone: str, name: str) -> Path:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    dest = DATA_DIR / "single_test_call.csv"
+    with dest.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["Name", "Phone"])
+        writer.writeheader()
+        writer.writerow({"Name": name, "Phone": phone})
+    return dest
+
+
+def _build_run_args(
+    *,
+    contacts: str,
+    profile: str,
+    limit: int,
+    loopback: str,
+    capture: str,
+    callback: str,
+    dry_run: bool,
+) -> List[str]:
+    args = [
+        "--contacts", contacts,
+        "--profile", profile,
+        "--limit", str(limit),
+        "--loopback-device", loopback,
+        "--capture-device", capture,
+    ]
+    if callback:
+        args += ["--callback-number", callback]
+    if dry_run:
+        args.append("--dry-run")
+    return args
+
+
 # ---------------------------------------------------------------------------
 # Page routes
 # ---------------------------------------------------------------------------
@@ -439,19 +487,54 @@ async def api_run_start(request: Request):
     capture = body.get("capture_device") or cfg.get("capture_device", "default")
     callback = body.get("callback_number") or cfg.get("callback_number", "")
 
-    args = [
-        "--contacts", contacts,
-        "--profile", profile,
-        "--limit", str(limit),
-        "--loopback-device", loopback,
-        "--capture-device", capture,
-    ]
-    if callback:
-        args += ["--callback-number", callback]
-    if dry_run:
-        args.append("--dry-run")
+    args = _build_run_args(
+        contacts=contacts,
+        profile=profile,
+        limit=limit,
+        loopback=loopback,
+        capture=capture,
+        callback=callback,
+        dry_run=dry_run,
+    )
 
     result = run_manager.start(args)
+    return result
+
+
+@app.post("/api/run/single-call")
+async def api_run_single_call(request: Request):
+    body = await request.json()
+    cfg = _load_config()
+
+    phone = _normalize_phone_number(body.get("phone"))
+    if not phone:
+        raise HTTPException(status_code=400, detail="Enter a valid phone number")
+
+    name = str(body.get("name") or "Single Test Contact").strip()
+    if not name:
+        name = "Single Test Contact"
+    name = name[:120]
+
+    contacts_file = _write_single_call_contacts(phone, name)
+    profile = body.get("profile_name") or cfg.get("profile_name", "sales_profile")
+    dry_run = bool(body.get("dry_run", False))
+    loopback = body.get("loopback_device") or cfg.get("loopback_device", "CABLE Input")
+    capture = body.get("capture_device") or cfg.get("capture_device", "default")
+    callback = body.get("callback_number") or cfg.get("callback_number", "")
+
+    args = _build_run_args(
+        contacts=str(contacts_file),
+        profile=profile,
+        limit=1,
+        loopback=loopback,
+        capture=capture,
+        callback=callback,
+        dry_run=dry_run,
+    )
+    result = run_manager.start(args)
+    if result.get("ok"):
+        result["phone"] = phone
+        result["contacts_file"] = str(contacts_file)
     return result
 
 

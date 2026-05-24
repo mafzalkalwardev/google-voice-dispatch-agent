@@ -64,6 +64,7 @@ def test_run_page_loads(client):
     r = client.get("/run")
     assert r.status_code == 200
     assert "Live Run" in r.text
+    assert "Single Test Call" in r.text
 
 
 def test_logs_page_loads(client):
@@ -206,6 +207,41 @@ def test_api_run_start_no_duplicate(client):
 
 
 # ── API: log lines ────────────────────────────────────────────────────────────
+
+def test_api_single_call_writes_one_contact_and_starts(client):
+    from src.web_app import DATA_DIR, run_manager
+
+    with patch.object(run_manager, "start", return_value={"ok": True, "pid": 1234}) as mock_start:
+        r = client.post("/api/run/single-call", json={
+            "phone": "212-555-0100",
+            "name": "Acme Carrier",
+            "dry_run": True,
+            "profile_name": "sales_profile",
+            "callback_number": "+15551234567",
+            "loopback_device": "CABLE Input",
+            "capture_device": "default",
+        })
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["phone"] == "+12125550100"
+
+    args = mock_start.call_args.args[0]
+    assert args[args.index("--limit") + 1] == "1"
+    assert "--dry-run" in args
+
+    contacts_path = Path(args[args.index("--contacts") + 1])
+    assert contacts_path == DATA_DIR / "single_test_call.csv"
+    text = contacts_path.read_text(encoding="utf-8")
+    assert "Acme Carrier" in text
+    assert "+12125550100" in text
+
+
+def test_api_single_call_rejects_invalid_phone(client):
+    r = client.post("/api/run/single-call", json={"phone": "abc", "dry_run": True})
+    assert r.status_code == 400
+
 
 def test_api_run_lines_empty(client):
     r = client.get("/api/run/lines?since=0")
