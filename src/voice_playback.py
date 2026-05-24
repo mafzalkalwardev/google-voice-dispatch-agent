@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -102,6 +103,44 @@ def _device_default_samplerate(sd, device_index: int, fallback: int) -> int:
         return fallback
 
 
+def _device_output_channels(sd, device_index: int) -> int:
+    """Return a conservative output channel count for a PortAudio device."""
+    try:
+        device = sd.query_devices(device_index)
+        return max(1, min(int(device.get("max_output_channels") or 1), 2))
+    except Exception:
+        return 1
+
+
+def _match_output_channels(data, channels: int):
+    """Return float32 audio shaped as (frames, channels)."""
+    import numpy as np
+
+    arr = np.asarray(data, dtype="float32")
+    if arr.ndim == 0:
+        arr = arr.reshape(1, 1)
+    elif arr.ndim == 1:
+        arr = arr.reshape(-1, 1)
+    elif arr.ndim > 2:
+        arr = arr.reshape(arr.shape[0], -1)
+
+    if arr.shape[1] == channels:
+        return np.ascontiguousarray(arr, dtype="float32")
+
+    if arr.shape[1] > channels:
+        if channels == 1:
+            arr = arr.mean(axis=1, keepdims=True)
+        else:
+            arr = arr[:, :channels]
+        return np.ascontiguousarray(arr, dtype="float32")
+
+    mono = arr.mean(axis=1, keepdims=True)
+    return np.ascontiguousarray(
+        np.repeat(mono, channels, axis=1),
+        dtype="float32",
+    )
+
+
 def _resample_audio(data, source_rate: int, target_rate: int):
     if int(source_rate) == int(target_rate):
         return data
@@ -135,6 +174,36 @@ def _resample_audio(data, source_rate: int, target_rate: int):
     return np.stack(channels, axis=1)
 
 
+def _stream_audio_to_device(
+    data,
+    samplerate: int,
+    device_index: int,
+    block: bool = True,
+) -> None:
+    """Write numpy-compatible audio to an explicit sounddevice OutputStream."""
+    import sounddevice as sd
+
+    target_rate = _device_default_samplerate(sd, device_index, int(samplerate))
+    if target_rate != int(samplerate):
+        data = _resample_audio(data, int(samplerate), target_rate)
+    channels = _device_output_channels(sd, device_index)
+    data = _match_output_channels(data, channels)
+
+    def _write() -> None:
+        with sd.OutputStream(
+            device=device_index,
+            samplerate=target_rate,
+            channels=channels,
+            dtype="float32",
+        ) as stream:
+            stream.write(data)
+
+    if block:
+        _write()
+    else:
+        threading.Thread(target=_write, daemon=True, name="AudioDeviceWriter").start()
+
+
 def play_wav_to_device(
     wav_path: str | Path,
     device_index: int,
@@ -154,7 +223,6 @@ def play_wav_to_device(
     data, samplerate = sf.read(str(wav_path), dtype="float32")
     duration = len(data) / samplerate
     playback_rate = _device_default_samplerate(sd, device_index, int(samplerate))
-    data = _resample_audio(data, int(samplerate), playback_rate)
 
     logger.info(
         "Playing %.1fs -> device [%d] at %s Hz: %s",
@@ -163,9 +231,7 @@ def play_wav_to_device(
         playback_rate,
         wav_path.name,
     )
-    sd.play(data, samplerate=playback_rate, device=device_index)
-    if block:
-        sd.wait()
+    _stream_audio_to_device(data, int(samplerate), device_index, block=block)
     return duration
 
 

@@ -28,7 +28,7 @@ _DEFAULTS = {
     "rotation_minutes": 60,
     "autocut_seconds": 15,
     "loopback_device": "CABLE Input",
-    "call_timeout": 30,
+    "call_timeout": 60,
     "call_max_duration": 90,
     # Realtime conversation settings
     "capture_device": "default",

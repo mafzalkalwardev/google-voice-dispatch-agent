@@ -94,9 +94,10 @@ def test_play_wav_to_device_file_not_found():
         play_wav_to_device("/nonexistent/path/file.wav", device_index=0)
 
 
-def test_play_wav_to_device_calls_sd_play(tmp_path):
+def test_play_wav_to_device_uses_explicit_output_stream(tmp_path):
     wav = tmp_path / "test.wav"
-    import struct, wave
+    import wave
+    import numpy as np
     # Create a minimal valid WAV (0.1s of silence at 44100 Hz)
     with wave.open(str(wav), "w") as wf:
         wf.setnchannels(1)
@@ -106,11 +107,25 @@ def test_play_wav_to_device_calls_sd_play(tmp_path):
 
     mock_sd = MagicMock()
     mock_sf = MagicMock()
-    mock_sf.read.return_value = ([0.0] * 4410, 44100)
+    mock_sf.read.return_value = (np.zeros(4410, dtype="float32"), 44100)
+    mock_sd.query_devices.return_value = {
+        "max_output_channels": 16,
+        "default_samplerate": 48000,
+    }
+    stream = MagicMock()
+    mock_sd.OutputStream.return_value.__enter__.return_value = stream
 
     with patch.dict("sys.modules", {"sounddevice": mock_sd, "soundfile": mock_sf}):
-        # Re-import inside patch context won't work easily; test the external interface
-        pass  # integration tested via play_wav_loopback below
+        duration = play_wav_to_device(wav, device_index=6)
+
+    assert duration == pytest.approx(0.1)
+    mock_sd.OutputStream.assert_called()
+    kwargs = mock_sd.OutputStream.call_args.kwargs
+    assert kwargs["device"] == 6
+    assert kwargs["channels"] == 2
+    assert kwargs["samplerate"] == 48000
+    stream.write.assert_called_once()
+    mock_sd.play.assert_not_called()
 
 
 # ---- play_wav_loopback ----

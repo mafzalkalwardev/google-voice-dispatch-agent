@@ -212,16 +212,6 @@ def _pyttsx3_to_device(text: str, device_index: int) -> None:
 # ------------------------------------------------------------------ #
 
 def _play_numpy_to_device(data: np.ndarray, samplerate: int, device_index: int) -> None:
-    import sounddevice as sd
-    from src.voice_playback import _resample_audio, _device_default_samplerate
+    from src.voice_playback import _stream_audio_to_device
 
-    target_rate = _device_default_samplerate(sd, device_index, samplerate)
-    if target_rate != samplerate:
-        data = _resample_audio(data, samplerate, target_rate)
-        samplerate = target_rate
-
-    if data.ndim > 1:
-        data = data.mean(axis=1)          # mix to mono
-
-    sd.play(data.astype(np.float32), samplerate=samplerate, device=device_index)
-    sd.wait()
+    _stream_audio_to_device(data.astype(np.float32), samplerate, device_index, block=True)

@@ -110,7 +110,7 @@
     <div class="form-grid">
       <div class="form-group">
         <label>Connect Timeout <span class="label-hint">(seconds to wait for answer)</span></label>
-        <input type="number" name="call_timeout" value="{{ cfg.call_timeout or 30 }}" min="5" max="120" />
+        <input type="number" name="call_timeout" value="{{ cfg.call_timeout or 60 }}" min="5" max="120" />
       </div>
       <div class="form-group">
         <label>Max Call Duration <span class="label-hint">(seconds before force-hangup)</span></label>

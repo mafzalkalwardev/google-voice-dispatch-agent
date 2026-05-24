@@ -20,7 +20,7 @@ def test_is_logged_in_true_when_element_found():
     b = _make_browser()
     mock_el = MagicMock()
     mock_el.is_displayed.return_value = True
-    b.driver.find_element.return_value = mock_el
+    b.driver.find_elements.return_value = [mock_el]
     assert b.is_logged_in() is True
 
 

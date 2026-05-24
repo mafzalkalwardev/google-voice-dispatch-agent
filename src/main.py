@@ -63,6 +63,8 @@ def _parse_args() -> argparse.Namespace:
                    help="Print sounddevice audio devices and exit")
     p.add_argument("--preflight", action="store_true",
                    help="Run readiness checks and exit without dialing")
+    p.add_argument("--audio-route-test", action="store_true",
+                   help="Play a short test phrase to the configured loopback output without dialing")
     p.add_argument("--safe-test", metavar="PHONE",
                    help="Safe one-number test mode: run preflight, confirm, then dial exactly "
                         "this number once. Does not read from --contacts.")
@@ -85,6 +87,37 @@ def _run_preflight(cfg: Config) -> int:
             worst = 1
         print(f"[{status:4}] {result.name}: {result.message}")
     return worst
+
+
+def _run_audio_route_test(args: argparse.Namespace, cfg: Config) -> int:
+    loopback_device = args.loopback_device or cfg.loopback_device
+    output_dir = ensure_audio_dir(args.output_dir) / "diagnostics"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    wav_path = output_dir / f"audio_route_test_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+    phrase = (
+        "Indus Transports audio route test. "
+        "If Google Voice microphone is set to CABLE Output, this audio reaches the call."
+    )
+
+    device_index = find_playable_loopback_device(loopback_device)
+    if device_index is None:
+        print(f"[FAIL] No playable loopback output device found for '{loopback_device}'.")
+        return 1
+
+    try:
+        save_text_to_speech(phrase, wav_path)
+        duration = play_wav_loopback(
+            wav_path,
+            device_hint=loopback_device,
+            fallback_to_default=False,
+        )
+    except Exception as exc:
+        print(f"[FAIL] Audio route test failed: {exc}")
+        return 1
+
+    print(f"[OK  ] Played {duration:.1f}s to loopback device '{loopback_device}'.")
+    print(f"[INFO] Test WAV saved at: {wav_path}")
+    return 0
 
 
 def _run_call(
@@ -205,13 +238,20 @@ def _run_call(
             logger.info("[%d] Call connected — playing script audio", index)
             if script_path is None:
                 raise RuntimeError("Static playback requested but script audio was not generated")
-            _play_audio(script_path, loopback_device, loopback_available, logger)
+            if not _play_audio(script_path, loopback_device, loopback_available, logger):
+                session.transition(CallState.FAILED, "script audio playback failed")
+                if browser.is_call_active():
+                    browser.hangup_call()
+                session.outcome = session.state.value
+                call_logger.log_session(session)
+                return
             # Wait for natural end (up to 60s after audio finishes)
             followup_state = browser.detect_call_state(session, timeout=60.0)
             if followup_state == CallState.VOICEMAIL:
                 logger.info("[%d] Voicemail detected after initial connection", index)
                 browser.wait_for_voicemail_beep(timeout=30.0)
-                _play_audio(voicemail_path, loopback_device, loopback_available, logger)
+                if not _play_audio(voicemail_path, loopback_device, loopback_available, logger):
+                    session.transition(CallState.FAILED, "voicemail audio playback failed")
                 browser.hangup_call()
                 if not session.is_terminal():
                     session.transition(CallState.ENDED, "hung up after voicemail playback")
@@ -224,7 +264,8 @@ def _run_call(
     elif final_state == CallState.VOICEMAIL:
         logger.info("[%d] Voicemail detected — playing voicemail audio", index)
         browser.wait_for_voicemail_beep(timeout=30.0)
-        _play_audio(voicemail_path, loopback_device, loopback_available, logger)
+        if not _play_audio(voicemail_path, loopback_device, loopback_available, logger):
+            session.transition(CallState.FAILED, "voicemail audio playback failed")
         browser.hangup_call()
         if not session.is_terminal():
             session.transition(CallState.ENDED, "hung up after voicemail playback")
@@ -371,19 +412,22 @@ def _play_audio(
     device_hint: str,
     loopback_available: bool,
     logger: logging.Logger,
-) -> None:
+) -> bool:
     if loopback_available:
         try:
-            duration = play_wav_loopback(path, device_hint=device_hint, fallback_to_default=True)
+            duration = play_wav_loopback(path, device_hint=device_hint, fallback_to_default=False)
             logger.info("Audio played: %.1fs via loopback", duration)
+            return True
         except Exception as exc:
             logger.error("Audio playback failed: %s", exc)
+            return False
     else:
         logger.warning(
             "No loopback device — audio not injected. File: %s", path
         )
         # sleep rough duration so call isn't cut short
         time.sleep(30)
+        return False
 
 
 def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
@@ -517,6 +561,8 @@ def main() -> None:
     cfg = Config.load()
     if args.preflight:
         raise SystemExit(_run_preflight(cfg))
+    if args.audio_route_test:
+        raise SystemExit(_run_audio_route_test(args, cfg))
 
     # ---- Safe one-number test mode ----
     if args.safe_test:

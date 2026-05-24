@@ -44,6 +44,8 @@ _SEL = {
         'a[aria-label*="account" i]',
     ],
     "dialpad_open": [
+        'button[aria-label*="keypad" i]',
+        'button[aria-label*="dialpad" i]',
         "gv-icon-button[icon-name='phone']",
         'button[aria-label*="dial" i]',
         'button[aria-label*="new call" i]',
@@ -51,12 +53,15 @@ _SEL = {
         '[data-action="new-call"]',
         'button[aria-label*="make" i]',
     ],
+    "calls_tab": [
+        'a[aria-label="Calls"]',
+        'a[role="tab"][aria-label*="Calls" i]',
+    ],
     "number_input": [
         'input[aria-label*="number" i]',
         'input[placeholder*="number" i]',
         'input[placeholder*="name or number" i]',
         "input[type='tel']",
-        'input[aria-label*="search" i]',
     ],
     "call_button": [
         'button[aria-label*="call" i]:not([aria-label*="end" i]):not([aria-label*="video" i])',
@@ -84,10 +89,12 @@ _SEL = {
         "[data-e2eid='call-timer']",
     ],
     "voicemail_cue": [
-        '[aria-label*="voicemail" i]',
-        '[jsname*="voicemail" i]',
         ".voicemail-indicator",
         "[data-e2eid='voicemail-record']",
+        '[aria-label*="leave a message" i]',
+        '[aria-label*="record after" i]',
+        '[title*="leave a message" i]',
+        '[title*="record after" i]',
     ],
     "call_ended_banner": [
         '[aria-label*="Call ended" i]',
@@ -224,13 +231,77 @@ class GoogleVoiceBrowser:
         while time.time() < deadline:
             for sel in selectors:
                 try:
-                    el = self.driver.find_element(By.CSS_SELECTOR, sel)
-                    if el.is_displayed():
-                        return el
+                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                    for el in els:
+                        if el.is_displayed():
+                            return el
                 except (NoSuchElementException, WebDriverException):
                     pass
             time.sleep(0.3)
         return None
+
+    def _click_first(self, group: str, timeout: float = 5.0) -> bool:
+        """Click the first visible/enabled element from a selector group."""
+        selectors = _SEL.get(group, [])
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for sel in selectors:
+                try:
+                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                except WebDriverException:
+                    continue
+                for el in els:
+                    try:
+                        if el.is_displayed() and el.is_enabled():
+                            _js_click(self.driver, el)
+                            return True
+                    except WebDriverException:
+                        continue
+            time.sleep(0.3)
+        return False
+
+    def _set_input_value(self, element, value: str) -> None:
+        """Set input text using native events when normal send_keys is blocked."""
+        self.driver.execute_script(
+            """
+            const el = arguments[0];
+            const value = arguments[1];
+            const proto = el.tagName === 'TEXTAREA'
+              ? window.HTMLTextAreaElement.prototype
+              : window.HTMLInputElement.prototype;
+            const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+            el.focus();
+            if (setter) {
+              setter.call(el, value);
+            } else {
+              el.value = value;
+            }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+            """,
+            element,
+            value,
+        )
+
+    def _open_calls_page(self) -> bool:
+        """Navigate to the Calls view where the keypad number input exists."""
+        try:
+            if "/calls" in (self.driver.current_url or ""):
+                return True
+        except WebDriverException:
+            return False
+
+        if self._click_first("calls_tab", timeout=5):
+            time.sleep(2.0)
+            return True
+
+        try:
+            self.driver.get(f"{GV_URL}/u/0/calls")
+            time.sleep(3.0)
+            return "/calls" in (self.driver.current_url or "")
+        except WebDriverException as exc:
+            logger.warning("Could not open Google Voice Calls page: %s", exc)
+            return False
 
     def _any_present(self, group: str) -> bool:
         for sel in _SEL.get(group, []):
@@ -271,6 +342,43 @@ class GoogleVoiceBrowser:
                     continue
         return False
 
+    def _voicemail_cue_present(self) -> bool:
+        """
+        Return True only for voicemail evidence from the active call surface.
+
+        Google Voice has persistent navigation/sidebar elements labelled
+        "voicemail"; those are not proof that the outbound call reached
+        voicemail. Keep this focused on leave-message/recording cues.
+        """
+        for sel in _SEL.get("voicemail_cue", []):
+            try:
+                els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+            except WebDriverException:
+                continue
+            for el in els:
+                try:
+                    if not el.is_displayed():
+                        continue
+                    if "voicemail-indicator" in sel or "voicemail-record" in sel:
+                        return True
+                    raw_parts = (
+                        getattr(el, "text", ""),
+                        el.get_attribute("aria-label"),
+                        el.get_attribute("title"),
+                        el.get_attribute("data-e2eid"),
+                    )
+                    text = " ".join(part for part in raw_parts if isinstance(part, str)).lower()
+                    if (
+                        "leave a message" in text
+                        or "record after" in text
+                        or "after the beep" in text
+                        or "voicemail-record" in text
+                    ):
+                        return True
+                except WebDriverException:
+                    continue
+        return False
+
     # ------------------------------------------------------------------
     # Dialing
     # ------------------------------------------------------------------
@@ -283,7 +391,9 @@ class GoogleVoiceBrowser:
             return False
         time.sleep(0.5)
 
-        wait = WebDriverWait(self.driver, 15)
+        if not self._open_calls_page():
+            logger.warning("Could not open Google Voice Calls page for %s", phone)
+            return False
 
         # Google Voice can keep the keypad open between sessions. If the
         # number input is already visible, start there.
@@ -292,12 +402,15 @@ class GoogleVoiceBrowser:
             if opened:
                 break
             try:
-                btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, sel)))
+                els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                btn = next((e for e in els if e.is_displayed() and e.is_enabled()), None)
+                if btn is None:
+                    continue
                 _js_click(self.driver, btn)
                 time.sleep(1.2)
                 opened = True
                 break
-            except (TimeoutException, WebDriverException):
+            except WebDriverException:
                 continue
 
         if not opened:
@@ -305,37 +418,30 @@ class GoogleVoiceBrowser:
             return False
 
         # Type the number
-        number_input = None
-        for sel in _SEL["number_input"]:
-            try:
-                number_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, sel)))
-                break
-            except (TimeoutException, WebDriverException):
-                continue
-
+        number_input = self._find_first("number_input", timeout=8)
         if number_input is None:
             logger.warning("Could not find number input for %s", phone)
             return False
 
-        self.driver.execute_script("arguments[0].value = '';", number_input)
-        number_input.click()
-        number_input.send_keys(Keys.CONTROL + "a")
-        number_input.send_keys(Keys.DELETE)
-        time.sleep(0.2)
-        number_input.send_keys(phone)
+        try:
+            _js_click(self.driver, number_input)
+            number_input.send_keys(Keys.CONTROL + "a")
+            number_input.send_keys(Keys.DELETE)
+            time.sleep(0.2)
+            number_input.send_keys(phone)
+        except WebDriverException as exc:
+            logger.warning("Direct number entry failed; retrying with DOM input events: %s", exc)
+            try:
+                self._set_input_value(number_input, phone)
+            except WebDriverException as js_exc:
+                logger.warning("Could not type number for %s: %s", phone, js_exc)
+                return False
         time.sleep(0.8)
 
         # Click call button
-        called = False
-        for sel in _SEL["call_button"]:
-            try:
-                call_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, sel)))
-                _js_click(self.driver, call_btn)
-                time.sleep(2)
-                called = True
-                break
-            except (TimeoutException, WebDriverException):
-                continue
+        called = self._click_first("call_button", timeout=8)
+        if called:
+            time.sleep(2)
 
         if not called:
             try:
@@ -380,7 +486,7 @@ class GoogleVoiceBrowser:
                 return CallState.CONNECTED
 
             # --- VOICEMAIL: DOM cue ---
-            if self._any_present("voicemail_cue"):
+            if self._voicemail_cue_present():
                 if session.state in (CallState.RINGING, CallState.CONNECTED):
                     session.transition(CallState.VOICEMAIL, "voicemail DOM cue")
                 return CallState.VOICEMAIL
@@ -427,7 +533,7 @@ class GoogleVoiceBrowser:
         """
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self._any_present("voicemail_cue") or self._page_contains_voicemail():
+            if self._voicemail_cue_present() or self._page_contains_voicemail():
                 time.sleep(1.5)  # wait for actual beep tone
                 return True
             time.sleep(0.5)
