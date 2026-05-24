@@ -82,6 +82,19 @@ _SEL = {
         "gv-icon-button[icon-name='call_end']",
         '[data-action="end-call"]',
     ],
+    # Controls that appear ONLY after a call is answered — NOT during ringing.
+    # Verified on a live Google Voice call: Transfer, Hold, Add a call, Mute,
+    # Send a message, Record appeared only after the remote party picked up.
+    # "Open keypad" is excluded because the dialpad is visible pre-call.
+    "answered_controls": [
+        'button[aria-label*="Hold call" i]',
+        'button[aria-label*="Mute call" i]',
+        'button[aria-label*="Unmute call" i]',
+        'button[aria-label*="Transfer" i]',
+        'button[aria-label*="Add a call" i]',
+        'button[aria-label*="Record the call" i]',
+        'button[aria-label*="Send a message" i]',
+    ],
     "call_timer": [
         '[jsname="pRLmDf"]',
         '[aria-label*="call duration" i]',
@@ -313,6 +326,39 @@ class GoogleVoiceBrowser:
                 pass
         return False
 
+    def _answered_controls_present(self) -> "tuple[bool, list[str]]":
+        """
+        Return (is_present, found_labels) for controls visible ONLY after answer.
+
+        During ringing Google Voice shows only the hangup/end button.  After
+        the remote party picks up, controls like Hold call, Mute call, Transfer
+        the Call, Add a call, Record the call appear.  Seeing any one of these
+        is reliable proof the call is CONNECTED.
+
+        Must NOT include the dialpad/keypad button — that is visible pre-call.
+        """
+        found: list[str] = []
+        for sel in _SEL.get("answered_controls", []):
+            try:
+                els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+            except WebDriverException:
+                continue
+            for el in els:
+                try:
+                    if not el.is_displayed():
+                        continue
+                    label = (
+                        el.get_attribute("aria-label")
+                        or el.get_attribute("title")
+                        or getattr(el, "text", "")
+                        or ""
+                    ).strip()
+                    if label:
+                        found.append(label)
+                except WebDriverException:
+                    continue
+        return bool(found), found
+
     def _connected_timer_present(self) -> bool:
         """
         Return True only for timer-like connected-call evidence.
@@ -479,11 +525,30 @@ class GoogleVoiceBrowser:
         deadline = time.time() + timeout
 
         while time.time() < deadline:
-            # --- CONNECTED: call timer appeared ---
+            # --- CONNECTED: call timer appeared (MM:SS duration counter) ---
             if self._connected_timer_present():
                 if session.state == CallState.RINGING:
+                    logger.info("CONNECTED: call timer (MM:SS) visible")
                     session.transition(CallState.CONNECTED, "call timer visible")
                 return CallState.CONNECTED
+
+            # --- CONNECTED: answered-call controls appeared ---
+            # Hold call / Mute / Transfer / Add a call / Record are only present
+            # after the remote party answers — NOT while ringing.
+            ctrl_present, ctrl_labels = self._answered_controls_present()
+            if ctrl_present:
+                if session.state == CallState.RINGING:
+                    reason = "answered controls visible: " + ", ".join(ctrl_labels[:4])
+                    logger.info("CONNECTED: %s", reason)
+                    session.transition(CallState.CONNECTED, reason)
+                return CallState.CONNECTED
+
+            # Log ringing state clearly so logs show why we're still waiting
+            if session.state == CallState.RINGING:
+                if self._any_present("call_active"):
+                    logger.debug(
+                        "RINGING: end button visible but no answered controls yet"
+                    )
 
             # --- VOICEMAIL: DOM cue ---
             if self._voicemail_cue_present():
@@ -503,9 +568,11 @@ class GoogleVoiceBrowser:
                     session.transition(CallState.ENDED, "call-ended banner detected")
                 return CallState.ENDED
 
-            # --- ENDED: hangup button disappeared while connected ---
+            # --- ENDED: active call controls vanished while connected ---
+            # When the call ends, the hangup button disappears — reliable end signal.
             if session.state == CallState.CONNECTED and not self._any_present("call_active"):
-                session.transition(CallState.ENDED, "hangup button vanished")
+                logger.info("ENDED: active call controls vanished (hangup button gone)")
+                session.transition(CallState.ENDED, "active call controls vanished")
                 return CallState.ENDED
 
             time.sleep(poll_interval)
@@ -565,6 +632,91 @@ class GoogleVoiceBrowser:
             return True
         except WebDriverException:
             return False
+
+    # ------------------------------------------------------------------
+    # Diagnostic snapshot (used by --diagnose-call-state CLI mode)
+    # ------------------------------------------------------------------
+
+    def take_dom_snapshot(self, phase: str) -> dict:
+        """
+        Capture a sanitized DOM snapshot for call-state diagnostics.
+        Returns a dict ready to be JSON-serialised.
+        No customer data: only aria-labels, classes, placeholder text.
+        """
+        snap: dict = {
+            "ts": time.time(),
+            "phase": phase,
+            "url": "",
+            "buttons": [],
+            "inputs": [],
+            "selector_hits": {},
+            "call_timer_found": False,
+            "answered_controls_found": [],
+            "call_active_found": False,
+        }
+        if not self.driver:
+            return snap
+        try:
+            snap["url"] = self.driver.current_url or ""
+        except WebDriverException:
+            pass
+
+        # Visible buttons — collect aria-label / title / text (no content data)
+        try:
+            for el in self.driver.find_elements(By.TAG_NAME, "button"):
+                try:
+                    if not el.is_displayed():
+                        continue
+                    label = (
+                        el.get_attribute("aria-label")
+                        or el.get_attribute("title")
+                        or el.text or ""
+                    ).strip()
+                    if label:
+                        snap["buttons"].append(label)
+                except WebDriverException:
+                    pass
+        except WebDriverException:
+            pass
+
+        # Visible inputs — placeholder / aria-label only
+        try:
+            for el in self.driver.find_elements(By.TAG_NAME, "input"):
+                try:
+                    if not el.is_displayed():
+                        continue
+                    hint = (
+                        el.get_attribute("placeholder")
+                        or el.get_attribute("aria-label") or ""
+                    ).strip()
+                    if hint:
+                        snap["inputs"].append(hint)
+                except WebDriverException:
+                    pass
+        except WebDriverException:
+            pass
+
+        # Test every known selector group
+        for group in _SEL:
+            hits = []
+            for sel in _SEL[group]:
+                try:
+                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                    visible = [
+                        e.get_attribute("aria-label") or e.text or sel
+                        for e in els if e.is_displayed()
+                    ]
+                    hits.extend(visible)
+                except WebDriverException:
+                    pass
+            if hits:
+                snap["selector_hits"][group] = hits
+
+        snap["call_timer_found"] = self._connected_timer_present()
+        ctrl_found, ctrl_labels = self._answered_controls_present()
+        snap["answered_controls_found"] = ctrl_labels
+        snap["call_active_found"] = self._any_present("call_active")
+        return snap
 
     # ------------------------------------------------------------------
     # Legacy helpers (kept for backward compatibility)

@@ -1,9 +1,14 @@
 """Regression tests for Google Voice call-state detection.
 
-Critical invariant: the hangup button (call_active) appears while Google Voice
-is still ringing an outbound call.  It MUST NOT be used as proof that the call
-was answered.  Only the call-duration timer (_connected_timer_present) proves
-a live connection.
+Critical invariants:
+  1. Hangup/end button alone (call_active) MUST NOT trigger CONNECTED.
+     It appears from the moment dialing starts — before answer.
+  2. The Google Voice voicemail navigation link MUST NOT trigger VOICEMAIL.
+     Only active-call recording/leave-a-message cues count.
+  3. Verified answered-call controls (Hold, Mute, Transfer, Add a call, Record)
+     MUST trigger CONNECTED — they appear only after the remote party answers.
+  4. Audio must never fall back to default speakers during a live call.
+  5. Number input selectors must not match the global search box.
 """
 from unittest.mock import MagicMock, patch
 
@@ -82,6 +87,62 @@ class TestConnectedDetection:
 
         with patch.object(browser, "_connected_timer_present", return_value=True), \
              patch.object(browser, "_any_present", return_value=True), \
+             patch.object(browser, "_voicemail_cue_present", return_value=False), \
+             patch.object(browser, "_page_contains_voicemail", return_value=False):
+            state = browser.detect_call_state(session, poll_interval=0.01, timeout=0.5)
+
+        assert state == CallState.CONNECTED
+
+    def test_answered_controls_trigger_connected(self):
+        """
+        Verified in-call controls (Hold, Mute, Transfer …) trigger CONNECTED.
+
+        These controls appear ONLY after the remote party answers.  During
+        ringing only the hangup button is present.  Seeing any of these is
+        conclusive proof that the call is live.
+        """
+        browser = _make_browser()
+        session = _ringing_session()
+
+        with patch.object(browser, "_connected_timer_present", return_value=False), \
+             patch.object(browser, "_answered_controls_present",
+                          return_value=(True, ["Hold call", "Mute call"])), \
+             patch.object(browser, "_any_present", return_value=False), \
+             patch.object(browser, "_voicemail_cue_present", return_value=False), \
+             patch.object(browser, "_page_contains_voicemail", return_value=False):
+            state = browser.detect_call_state(session, poll_interval=0.01, timeout=0.5)
+
+        assert state == CallState.CONNECTED
+        assert session.state == CallState.CONNECTED
+
+    def test_answered_controls_reason_recorded_in_session_notes(self):
+        """Session notes include which answered controls were seen."""
+        browser = _make_browser()
+        session = _ringing_session()
+
+        with patch.object(browser, "_connected_timer_present", return_value=False), \
+             patch.object(browser, "_answered_controls_present",
+                          return_value=(True, ["Hold call", "Mute call", "Transfer"])), \
+             patch.object(browser, "_any_present", return_value=False), \
+             patch.object(browser, "_voicemail_cue_present", return_value=False), \
+             patch.object(browser, "_page_contains_voicemail", return_value=False):
+            browser.detect_call_state(session, poll_interval=0.01, timeout=0.5)
+
+        assert session.state == CallState.CONNECTED
+        combined_notes = " ".join(session.notes)
+        assert "Hold call" in combined_notes, (
+            "Session notes must record which controls confirmed the connection"
+        )
+
+    def test_single_answered_control_sufficient_for_connected(self):
+        """Even a single verified answered control is enough to confirm CONNECTED."""
+        browser = _make_browser()
+        session = _ringing_session()
+
+        with patch.object(browser, "_connected_timer_present", return_value=False), \
+             patch.object(browser, "_answered_controls_present",
+                          return_value=(True, ["Record the call"])), \
+             patch.object(browser, "_any_present", return_value=False), \
              patch.object(browser, "_voicemail_cue_present", return_value=False), \
              patch.object(browser, "_page_contains_voicemail", return_value=False):
             state = browser.detect_call_state(session, poll_interval=0.01, timeout=0.5)
@@ -192,3 +253,76 @@ class TestSelectorHelpers:
         selectors = _SEL["number_input"]
 
         assert all("search" not in selector.lower() for selector in selectors)
+
+    def test_answered_controls_selector_group_exists(self):
+        """The answered_controls selector group must be defined in _SEL."""
+        assert "answered_controls" in _SEL
+        assert len(_SEL["answered_controls"]) >= 3, (
+            "answered_controls must have at least Hold, Mute, Transfer selectors"
+        )
+
+    def test_answered_controls_does_not_include_open_keypad(self):
+        """
+        'Open keypad' must NOT be in answered_controls — the dialpad is visible
+        before the call is answered, so it cannot serve as a CONNECTED signal.
+        """
+        selectors = _SEL["answered_controls"]
+        lower_sels = " ".join(selectors).lower()
+        assert "open keypad" not in lower_sels, (
+            "Open keypad appears pre-call and must not be an answered-call signal"
+        )
+
+    def test_answered_controls_does_not_include_hangup(self):
+        """Hangup / end-call must not be in answered_controls — it appears during ringing."""
+        selectors = _SEL["answered_controls"]
+        hangup_keywords = ("end call", "hang up", "call_end", "end-call")
+        for sel in selectors:
+            sel_lower = sel.lower()
+            for kw in hangup_keywords:
+                assert kw not in sel_lower, (
+                    f"Selector '{sel}' looks like a hangup selector (matched '{kw}')"
+                )
+
+    def test_voicemail_nav_not_in_voicemail_cue_selectors(self):
+        """Persistent Google Voice voicemail navigation must not end a ringing call."""
+        selectors = _SEL["voicemail_cue"]
+
+        assert all('[aria-label*="voicemail"' not in selector for selector in selectors)
+        assert all('[jsname*="voicemail"' not in selector for selector in selectors)
+
+    def test_calls_page_opened_before_dialing(self):
+        """dial_number must call _open_calls_page before touching the number input."""
+        browser = _make_browser()
+
+        with patch.object(browser, "_open_calls_page", return_value=False) as mock_open, \
+             patch.object(browser, "_focus_driver", return_value=True):
+            result = browser.dial_number("+15550000001", connect_timeout=5)
+
+        mock_open.assert_called_once()
+        assert result is False, "_open_calls_page returning False must abort dialing"
+
+
+class TestAudioFallback:
+
+    def test_play_wav_loopback_does_not_fall_back_to_default_speakers(self):
+        """
+        _play_audio must never fall back to default speakers for a live call.
+        If the loopback device is unavailable, it must log a warning and return
+        False — not play audio to the system output where the prospect could be
+        overheard by the AI on the capture side.
+        """
+        from src.main import _play_audio
+        import logging
+
+        with patch("src.main.play_wav_loopback") as mock_play:
+            result = _play_audio(
+                path=MagicMock(),
+                device_hint="CABLE Input",
+                loopback_available=False,
+                logger=logging.getLogger("test"),
+            )
+
+        mock_play.assert_not_called()
+        assert result is False, (
+            "_play_audio must not call play_wav_loopback when loopback_available=False"
+        )

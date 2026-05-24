@@ -68,6 +68,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--safe-test", metavar="PHONE",
                    help="Safe one-number test mode: run preflight, confirm, then dial exactly "
                         "this number once. Does not read from --contacts.")
+    p.add_argument("--diagnose-call-state", metavar="PHONE",
+                   help="DOM diagnostic mode: dial PHONE, capture DOM snapshots every 1.5s "
+                        "under logs/diagnostics/, hang up after 90s. "
+                        "Use only with the designated test number.")
     return p.parse_args()
 
 
@@ -430,6 +434,143 @@ def _play_audio(
         return False
 
 
+def _run_call_state_diagnostic(args: argparse.Namespace, cfg: Config) -> None:
+    """
+    Dial PHONE, capture DOM snapshots every 1.5 s to logs/diagnostics/, hang up after 90 s.
+    Shows what Google Voice DOM looks like in each phase so we can verify CONNECTED signals.
+    Only use with the designated safe test number (+17085681794).
+
+    Usage:
+        python -m src.main --diagnose-call-state +17085681794
+    """
+    import json
+    import sys
+
+    phone = args.diagnose_call_state.strip()
+    diag_dir = BASE_DIR / "logs" / "diagnostics"
+    diag_dir.mkdir(parents=True, exist_ok=True)
+
+    print("\n" + "=" * 60)
+    print("  CALL-STATE DIAGNOSTIC — INDUS TRANSPORTS LLC")
+    print("=" * 60)
+    print(f"\n  Target: {phone}")
+    print(f"  Snapshots → {diag_dir}")
+    print("\n  This will place a LIVE call. Answer on the other phone,")
+    print("  stay silent 5s, then speak normally for 10s, then hang up.")
+    print("  The diagnostic will capture DOM state at each transition.")
+    print()
+    try:
+        answer = input("Type YES to proceed: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.")
+        return
+    if answer != "YES":
+        print("Aborted.")
+        return
+
+    logger = setup_logger()
+    profile_name = args.profile or cfg.profile_name
+
+    browser = GoogleVoiceBrowser(profile_name=profile_name, headless=False)
+    logger.info("[DIAG] Launching Chrome for diagnostic call to %s", phone)
+    browser.launch()
+
+    if not browser.is_logged_in():
+        logger.warning("[DIAG] Not logged in — please sign in manually.")
+        if not browser.wait_for_manual_login(timeout=300):
+            browser.close()
+            raise SystemExit("Login timed out.")
+
+    snapshots: list[dict] = []
+    phase = "PRE_DIAL"
+    snap_idx = 0
+
+    def save_snap(p: str) -> None:
+        nonlocal snap_idx
+        snap = browser.take_dom_snapshot(p)
+        snap["snap_idx"] = snap_idx
+        snapshots.append(snap)
+        fname = diag_dir / f"snap_{snap_idx:03d}_{p}.json"
+        fname.write_text(json.dumps(snap, indent=2, default=str), encoding="utf-8")
+        logger.info(
+            "[DIAG] %s snap #%d — buttons=%d answered_controls=%s timer=%s call_active=%s",
+            p, snap_idx,
+            len(snap["buttons"]),
+            snap["answered_controls_found"],
+            snap["call_timer_found"],
+            snap["call_active_found"],
+        )
+        snap_idx += 1
+
+    try:
+        save_snap(phase)
+
+        logger.info("[DIAG] Dialing %s ...", phone)
+        print(f"\n  >>> Dialing {phone} now. Answer on the other phone.")
+        dialed = browser.dial_number(phone, connect_timeout=30)
+        if not dialed:
+            logger.error("[DIAG] dial_number returned False — aborting.")
+            return
+        phase = "DIALING"
+        save_snap(phase)
+
+        # Poll for up to 90 s, saving a snapshot every 1.5 s
+        deadline = time.time() + 90.0
+        last_phase = phase
+        while time.time() < deadline:
+            time.sleep(1.5)
+
+            # Determine observed phase from DOM
+            if browser._connected_timer_present():
+                phase = "CONNECTED_TIMER"
+            elif browser._answered_controls_present()[0]:
+                ctrl_labels = browser._answered_controls_present()[1]
+                phase = "CONNECTED_CONTROLS"
+                logger.info("[DIAG] Answered controls: %s", ctrl_labels)
+            elif browser._voicemail_cue_present() or browser._page_contains_voicemail():
+                phase = "VOICEMAIL"
+            elif browser._any_present("call_ended_banner"):
+                phase = "ENDED"
+            elif browser._any_present("call_active"):
+                phase = "RINGING_OR_CONNECTED"
+            else:
+                phase = "UNKNOWN_OR_ENDED"
+
+            save_snap(phase)
+
+            if phase in ("ENDED", "VOICEMAIL", "UNKNOWN_OR_ENDED") and last_phase not in (
+                "PRE_DIAL", "DIALING"
+            ):
+                logger.info("[DIAG] Call appears ended — stopping polling.")
+                break
+            last_phase = phase
+
+    finally:
+        phase = "HANGUP"
+        save_snap(phase)
+        logger.info("[DIAG] Hanging up.")
+        browser.hangup_call()
+        time.sleep(1)
+        save_snap("POST_HANGUP")
+        browser.close()
+
+    # Summary
+    print("\n" + "=" * 60)
+    print(f"  Diagnostic complete — {snap_idx} snapshots saved to:")
+    print(f"  {diag_dir}")
+    print()
+    connected_snaps = [s for s in snapshots if "CONNECTED" in s["phase"]]
+    ringing_snaps = [s for s in snapshots if "RINGING" in s["phase"]]
+    print(f"  RINGING snapshots: {len(ringing_snaps)}")
+    print(f"  CONNECTED snapshots: {len(connected_snaps)}")
+    if connected_snaps:
+        best = connected_snaps[0]
+        print(f"  First CONNECTED at snap #{best['snap_idx']}: "
+              f"timer={best['call_timer_found']} "
+              f"controls={best['answered_controls_found']}")
+    print("=" * 60)
+
+
 def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
     """
     Safe one-number test mode.
@@ -563,6 +704,11 @@ def main() -> None:
         raise SystemExit(_run_preflight(cfg))
     if args.audio_route_test:
         raise SystemExit(_run_audio_route_test(args, cfg))
+
+    # ---- DOM diagnostic mode ----
+    if args.diagnose_call_state:
+        _run_call_state_diagnostic(args, cfg)
+        return
 
     # ---- Safe one-number test mode ----
     if args.safe_test:
