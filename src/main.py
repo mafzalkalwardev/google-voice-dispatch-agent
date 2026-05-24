@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from src.google_voice import GoogleVoiceBrowser
 from src.ai_groq import GroqAgent
 from src.logger import setup_logger
 from src.tts import save_text_to_speech, ensure_audio_dir
-from src.voice_playback import play_wav_loopback, find_loopback_device, find_loopback_devices
+from src.voice_playback import play_wav_loopback, find_loopback_device, print_devices
 
 
 def _parse_args() -> argparse.Namespace:
@@ -44,12 +45,17 @@ def _parse_args() -> argparse.Namespace:
                    help="Launch Chrome headless (not recommended for Google Voice)")
     p.add_argument("--dry-run", action="store_true",
                    help="Generate scripts and audio only — skip all dialing")
-    p.add_argument("--realtime", action="store_true",
-                   help="Use realtime conversation loop (STT+LLM+TTS) instead of static WAV playback")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--realtime", dest="realtime", action="store_true", default=True,
+                      help="Use realtime conversation loop (default)")
+    mode.add_argument("--static-playback", dest="realtime", action="store_false",
+                      help="Use pregenerated WAV playback instead of realtime conversation")
     p.add_argument("--capture-device", default=None,
                    help="Audio capture device hint for realtime mode (default from config)")
     p.add_argument("--tts-voice", default=None,
                    help="edge-tts voice name for realtime mode (default from config)")
+    p.add_argument("--list-audio-devices", action="store_true",
+                   help="Print sounddevice audio devices and exit")
     return p.parse_args()
 
 
@@ -86,16 +92,23 @@ def _run_call(
     name = contact["name"]
     session = CallSession(phone=phone, contact_name=name)
 
-    logger.info("[%d] Generating AI scripts for %s (%s)", index, name, phone)
-    script_text = ai.generate_call_script(
-        contact_name=name,
-        objective=objective,
-        context=f"Contact: {name}, Phone: {phone}",
-        agent_name=agent_name,
-        company_name=company_name,
-        company_context=company_context,
-        company_website=company_website,
-    )
+    logger.info("[%d] Preparing AI audio assets for %s (%s)", index, name, phone)
+    script_path: Path | None = None
+    if not realtime:
+        script_text = ai.generate_call_script(
+            contact_name=name,
+            objective=objective,
+            context=f"Contact: {name}, Phone: {phone}",
+            agent_name=agent_name,
+            company_name=company_name,
+            company_context=company_context,
+            company_website=company_website,
+        )
+        script_path = script_dir / f"script_{index}_{phone.replace('+', '')}.wav"
+        script_text_path = script_path.with_suffix(".txt")
+        script_text_path.write_text(script_text, encoding="utf-8")
+        save_text_to_speech(script_text, script_path)
+
     voicemail_text = ai.generate_voicemail(
         contact_name=name,
         offer_summary=offer,
@@ -105,22 +118,16 @@ def _run_call(
         company_context=company_context,
     )
 
-    script_path = script_dir / f"script_{index}_{phone.replace('+', '')}.wav"
     voicemail_path = voicemail_dir / f"voicemail_{index}_{phone.replace('+', '')}.wav"
-    script_text_path = script_path.with_suffix(".txt")
     voicemail_text_path = voicemail_path.with_suffix(".txt")
 
-    script_text_path.write_text(script_text, encoding="utf-8")
     voicemail_text_path.write_text(voicemail_text, encoding="utf-8")
 
-    save_text_to_speech(script_text, script_path)
     save_text_to_speech(voicemail_text, voicemail_path)
-    logger.info(
-        "[%d] Script/audio ready: %s | %s",
-        index,
-        script_path.name,
-        voicemail_path.name,
-    )
+    if realtime:
+        logger.info("[%d] Realtime mode ready; voicemail fallback: %s", index, voicemail_path.name)
+    else:
+        logger.info("[%d] Static audio ready: %s | %s", index, script_path.name, voicemail_path.name)
 
     if dry_run:
         logger.info("[%d] DRY RUN — skipping dial for %s", index, phone)
@@ -160,10 +167,14 @@ def _run_call(
                 tts_voice=tts_voice,
                 stt_model=stt_model,
                 vad_threshold=vad_threshold,
+                browser=browser,
+                call_max_duration=call_max_duration,
                 logger=logger,
             )
         else:
             logger.info("[%d] Call connected — playing script audio", index)
+            if script_path is None:
+                raise RuntimeError("Static playback requested but script audio was not generated")
             _play_audio(script_path, loopback_device, loopback_available, logger)
             # Wait for natural end (up to 60s after audio finishes)
             followup_state = browser.detect_call_state(session, timeout=60.0)
@@ -217,6 +228,8 @@ def _run_realtime_loop(
     tts_voice: str,
     stt_model: str,
     vad_threshold: float,
+    browser: GoogleVoiceBrowser,
+    call_max_duration: int,
     logger: logging.Logger,
 ) -> None:
     from src.conversation_agent import ConversationAgent
@@ -245,10 +258,61 @@ def _run_realtime_loop(
         stt=stt,
         vad_config=vad_cfg,
     )
+    monitor_stop = threading.Event()
+    monitor = threading.Thread(
+        target=_monitor_live_call,
+        args=(browser, loop, session, monitor_stop, float(call_max_duration), logger),
+        daemon=True,
+        name="GoogleVoiceCallMonitor",
+    )
+    monitor.start()
     try:
         loop.run(session=session, auto_opening=True)
     except Exception as exc:
         logger.error("Realtime loop error: %s", exc)
+        if not session.is_terminal():
+            session.transition(CallState.FAILED, f"realtime loop error: {exc}")
+    finally:
+        monitor_stop.set()
+        monitor.join(timeout=2.0)
+        if not session.is_terminal():
+            if browser.is_call_active():
+                browser.hangup_call()
+                session.transition(CallState.ENDED, "realtime loop stopped; hung up active call")
+            else:
+                session.transition(CallState.ENDED, "Google Voice call ended")
+
+
+def _monitor_live_call(
+    browser: GoogleVoiceBrowser,
+    loop,
+    session: CallSession,
+    stop_event: threading.Event,
+    max_duration: float,
+    logger: logging.Logger,
+) -> None:
+    started = time.monotonic()
+    inactive_hits = 0
+    while not stop_event.is_set() and not loop.is_stopped():
+        if max_duration > 0 and time.monotonic() - started >= max_duration:
+            logger.warning("Realtime call max duration reached; ending call.")
+            if browser.is_call_active():
+                browser.hangup_call()
+            loop.stop()
+            return
+
+        if browser.is_call_active():
+            inactive_hits = 0
+        else:
+            inactive_hits += 1
+            if time.monotonic() - started > 3.0 and inactive_hits >= 3:
+                logger.info("Google Voice call no longer active; stopping realtime loop.")
+                if not session.is_terminal():
+                    session.transition(CallState.ENDED, "Google Voice call ended")
+                loop.stop()
+                return
+
+        time.sleep(1.0)
 
 
 def _play_audio(
@@ -273,6 +337,10 @@ def _play_audio(
 
 def main() -> None:
     args = _parse_args()
+    if args.list_audio_devices:
+        print_devices()
+        return
+
     cfg = Config.load()
     cfg.validate()
     logger = setup_logger()
@@ -318,10 +386,11 @@ def main() -> None:
             "Install VB-CABLE from https://vb-audio.com/Cable/",
             loopback_device,
         )
-    if args.realtime and not loopback_available:
-        logger.warning(
-            "--realtime requested but no loopback device found; "
-            "realtime TTS will not reach Google Voice."
+    if args.realtime and not args.dry_run and not loopback_available:
+        raise SystemExit(
+            "Realtime mode needs an output loopback device so TTS reaches Google Voice. "
+            "Install/configure VB-CABLE, set LOOPBACK_DEVICE or --loopback-device to the "
+            "playback cable input, or run with --static-playback."
         )
 
     if args.dry_run:
@@ -336,6 +405,12 @@ def main() -> None:
                 loopback_device, loopback_device_index, loopback_available,
                 call_timeout, call_max_duration,
                 dry_run=True,
+                realtime=args.realtime,
+                capture_device=capture_device,
+                tts_voice=tts_voice,
+                stt_model=cfg.stt_model,
+                vad_threshold=cfg.vad_threshold,
+                groq_api_key=cfg.groq_api_key,
             )
         logger.info("Dry run complete. Audio files in %s/", output_dir)
         return

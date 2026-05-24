@@ -426,6 +426,10 @@ class GoogleVoiceBrowser:
     def _is_call_active(self) -> bool:
         return self._any_present("call_active")
 
+    def is_call_active(self) -> bool:
+        """Return True while Google Voice still shows an active call control."""
+        return self._is_call_active()
+
     def wait_for_call_connect(self, timeout: int = 30) -> bool:
         deadline = time.time() + timeout
         while time.time() < deadline:

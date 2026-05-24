@@ -146,6 +146,9 @@ class ConversationLoop:
     def stop(self) -> None:
         self._stop_event.set()
 
+    def is_stopped(self) -> bool:
+        return self._stop_event.is_set()
+
     def in_takeover(self) -> bool:
         return self._takeover_event.is_set()
 
