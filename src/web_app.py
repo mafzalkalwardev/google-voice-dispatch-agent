@@ -30,11 +30,11 @@ from fastapi.responses import (
 )
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from src.paths import ensure_runtime_dirs, resource_path, runtime_base
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-SRC_DIR = Path(__file__).resolve().parent
-TEMPLATES_DIR = SRC_DIR / "templates"
-STATIC_DIR = SRC_DIR / "static"
+BASE_DIR = ensure_runtime_dirs()
+TEMPLATES_DIR = resource_path("src", "templates")
+STATIC_DIR = resource_path("src", "static")
 CALL_LOG_FILE = BASE_DIR / "logs" / "call_logs.csv"
 CONFIG_FILE = BASE_DIR / "dialer_config.json"
 DATA_DIR = BASE_DIR / "data"
@@ -158,7 +158,10 @@ class RunManager:
             self._loop = asyncio.get_event_loop()
         except RuntimeError:
             self._loop = None
-        cmd = [sys.executable, "-m", "src.main"] + extra_args
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable, "--agent-cli"] + extra_args
+        else:
+            cmd = [sys.executable, "-m", "src.main"] + extra_args
         try:
             self._process = subprocess.Popen(
                 cmd,
@@ -518,12 +521,32 @@ async def api_logs(limit: int = 200):
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def _server_port(default: int = 8000) -> int:
+    raw_port = os.environ.get("INDUS_CONSOLE_PORT")
+    for idx, arg in enumerate(sys.argv[1:]):
+        if arg == "--port" and idx + 2 <= len(sys.argv[1:]):
+            raw_port = sys.argv[idx + 2]
+        elif arg.startswith("--port="):
+            raw_port = arg.split("=", 1)[1]
+
+    if not raw_port:
+        return default
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise SystemExit(f"Invalid console port: {raw_port}") from exc
+    if port < 1 or port > 65535:
+        raise SystemExit(f"Console port out of range: {port}")
+    return port
+
+
 def main() -> None:
     import uvicorn  # type: ignore
+    runtime_base()
     uvicorn.run(
         "src.web_app:app",
         host="127.0.0.1",
-        port=8000,
+        port=_server_port(),
         reload=False,
         log_level="info",
     )

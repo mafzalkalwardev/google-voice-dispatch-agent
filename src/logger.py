@@ -1,7 +1,8 @@
 import logging
 from pathlib import Path
+from src.paths import runtime_base
 
-LOG_DIR = Path("logs")
+LOG_DIR = runtime_base() / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
 

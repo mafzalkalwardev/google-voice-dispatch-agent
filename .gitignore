@@ -16,6 +16,9 @@ chrome_profiles/
 *.log
 dist/
 build/
+release/
+installer/output/
+*.spec.bak
 
 # Local contact lists, generated scripts, and call audio can contain PII.
 data/*

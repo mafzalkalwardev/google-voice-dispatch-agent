@@ -18,6 +18,7 @@ from selenium.common.exceptions import (
     TimeoutException,
     WebDriverException,
 )
+from src.paths import runtime_base
 
 try:
     from webdriver_manager.chrome import ChromeDriverManager
@@ -27,7 +28,7 @@ except ImportError:
 
 from src.call_session import CallSession, CallState
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = runtime_base()
 GV_URL = "https://voice.google.com"
 
 logger = logging.getLogger("GoogleVoiceAgent")

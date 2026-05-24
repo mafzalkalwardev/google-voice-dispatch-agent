@@ -60,6 +60,54 @@ uvicorn src.web_app:app --reload --port 8000
 
 ---
 
+## Windows EXE / Installer Build
+
+Build a portable Windows EXE:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1
+```
+
+Build output:
+
+- `dist\IndusDispatchConsole.exe`
+- `release\IndusDispatchConsole-portable.zip`
+
+If port 8000 is busy, launch the EXE with a different console port:
+
+```powershell
+.\dist\IndusDispatchConsole.exe --port 8787
+```
+
+Optional installer build, if Inno Setup is installed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1 -BuildInstaller
+```
+
+Installed/runtime data is stored outside the app binary:
+
+```text
+%LOCALAPPDATA%\IndusDispatchAgent
+```
+
+That folder is where the installed EXE reads/writes `.env`, `dialer_config.json`, contacts, Chrome profiles, logs, transcripts, and generated audio. These files are not bundled into the EXE and are not committed to Git.
+
+Required on each computer:
+
+- Google Chrome
+- Google Voice account login
+- VB-CABLE or equivalent audio routing for live calls
+- A local `.env` with `GROQ_API_KEY` and `CALLBACK_NUMBER`
+
+For source runs, the helper also accepts a custom port:
+
+```powershell
+.\Start-IndusConsole.ps1 -Port 8787
+```
+
+---
+
 ## CLI
 
 ### List audio devices

@@ -2,8 +2,9 @@ import os
 import json
 from pathlib import Path
 from dotenv import load_dotenv
+from src.paths import runtime_base
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = runtime_base()
 DATA_DIR = BASE_DIR / "data"
 CONFIG_FILE = BASE_DIR / "dialer_config.json"
 

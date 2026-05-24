@@ -4,11 +4,12 @@ import csv
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
+from src.paths import runtime_base
 
 if TYPE_CHECKING:
     from src.call_session import CallSession
 
-CALL_LOG_FILE = Path("logs") / "call_logs.csv"
+CALL_LOG_FILE = runtime_base() / "logs" / "call_logs.csv"
 CALL_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 _HEADERS = [

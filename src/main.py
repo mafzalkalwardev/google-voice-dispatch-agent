@@ -17,8 +17,9 @@ from src.ai_groq import GroqAgent
 from src.logger import setup_logger
 from src.tts import save_text_to_speech, ensure_audio_dir
 from src.voice_playback import play_wav_loopback, find_playable_loopback_device, print_devices
+from src.paths import runtime_base
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = runtime_base()
 
 
 def _parse_args() -> argparse.Namespace:
