@@ -1,0 +1,15 @@
+selenium
+webdriver-manager
+pandas
+openpyxl
+python-dotenv
+groq
+sounddevice
+soundfile
+pyttsx3
+edge-tts
+soundcard
+keyboard
+numpy
+pytest
+pytest-mock

@@ -1,0 +1,19 @@
+{
+  "contacts_file": "data/contacts.xlsx",
+  "profile_name": "sales_profile",
+  "callback_number": "+15551234567",
+  "agent_name": "Tony",
+  "company_name": "Indus Transports LLC",
+  "company_website": "https://industransports.online/",
+  "company_context": "Indus Transports LLC helps owner-operators and small trucking companies find high-paying freight loads nationwide with dedicated dispatchers, rate negotiation, paperwork/payment support, all equipment types, 48-state coverage, and 24/7 support. Website says carriers can average $12K+ weekly gross, but do not guarantee earnings.",
+  "groq_model": "llama-3.3-70b-versatile",
+  "rotation_minutes": 60,
+  "autocut_seconds": 15,
+  "loopback_device": "CABLE Input",
+  "call_timeout": 30,
+  "call_max_duration": 90,
+  "capture_device": "default",
+  "tts_voice": "en-US-GuyNeural",
+  "stt_model": "whisper-large-v3-turbo",
+  "vad_threshold": 0.015
+}

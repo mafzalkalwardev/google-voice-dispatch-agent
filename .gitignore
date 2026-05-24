@@ -1,0 +1,24 @@
+.env
+.env.*
+!.env.example
+dialer_config.json
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.codegraph/
+.claude/
+.cursor/
+.sixth/
+logs/
+chrome_profiles/
+*.log
+dist/
+build/
+
+# Local contact lists, generated scripts, and call audio can contain PII.
+data/*
+audio/scripts/
+audio/voicemails/
+*.wav
