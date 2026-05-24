@@ -93,6 +93,8 @@ Installed/runtime data is stored outside the app binary:
 
 That folder is where the installed EXE reads/writes `.env`, `dialer_config.json`, contacts, Chrome profiles, logs, transcripts, and generated audio. These files are not bundled into the EXE and are not committed to Git.
 
+For local development, when `dist\IndusDispatchConsole.exe` is launched from this repository, it will use the repository folder if `.env` is present. A portable EXE folder can also keep `.env`, `dialer_config.json`, and `chrome_profiles\` beside the EXE.
+
 Required on each computer:
 
 - Google Chrome
