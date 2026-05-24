@@ -18,6 +18,8 @@ from src.logger import setup_logger
 from src.tts import save_text_to_speech, ensure_audio_dir
 from src.voice_playback import play_wav_loopback, find_playable_loopback_device, print_devices
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Google Voice Dispatch Sales Agent")
@@ -60,6 +62,9 @@ def _parse_args() -> argparse.Namespace:
                    help="Print sounddevice audio devices and exit")
     p.add_argument("--preflight", action="store_true",
                    help="Run readiness checks and exit without dialing")
+    p.add_argument("--safe-test", metavar="PHONE",
+                   help="Safe one-number test mode: run preflight, confirm, then dial exactly "
+                        "this number once. Does not read from --contacts.")
     return p.parse_args()
 
 
@@ -264,6 +269,12 @@ def _run_realtime_loop(
     from src.stt import GroqWhisperSTT
     from src.vad import VADConfig
 
+    # Build transcript path: logs/transcripts/<phone>_<timestamp>.txt
+    # The logs/ directory is git-ignored; transcripts are never committed.
+    transcript_ts = time.strftime("%Y%m%d_%H%M%S")
+    safe_phone = session.phone.replace("+", "").replace(" ", "")
+    transcript_path = BASE_DIR / "logs" / "transcripts" / f"{safe_phone}_{transcript_ts}.txt"
+
     try:
         validate_tts_output_device(loopback_device_index)
         tts = RealtimeTTS(device_index=loopback_device_index, voice=tts_voice)
@@ -285,7 +296,9 @@ def _run_realtime_loop(
             agent=agent,
             stt=stt,
             vad_config=vad_cfg,
+            transcript_path=transcript_path,
         )
+        logger.info("Transcript will be saved to: %s", transcript_path)
     except Exception as exc:
         logger.error("Realtime setup error: %s", exc)
         if browser.is_call_active():
@@ -372,6 +385,128 @@ def _play_audio(
         time.sleep(30)
 
 
+def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
+    """
+    Safe one-number test mode.
+
+    1. Runs all preflight checks and prints results.
+    2. Shows the target number prominently.
+    3. Requires explicit keyboard confirmation before dialing.
+    4. Dials exactly that one number — ignores --contacts and --limit.
+    5. Uses the same realtime pipeline as a live run.
+
+    Usage:
+        python -m src.main --safe-test +15551234567
+    """
+    import sys
+
+    phone = args.safe_test.strip()
+    if not phone.startswith("+"):
+        print(f"\n[WARN] Number '{phone}' has no country code (+1...). "
+              "Google Voice works best with E.164 format.")
+
+    # --- Preflight ---
+    print("\n" + "=" * 60)
+    print("  SAFE TEST MODE — INDUS TRANSPORTS LLC")
+    print("=" * 60)
+    print(f"\n  Target number: {phone}\n")
+    print("Running preflight checks first...\n")
+    exit_code = _run_preflight(cfg)
+    if exit_code != 0:
+        raise SystemExit(
+            "\nPreflight FAILED. Fix the issues above before running a live test."
+        )
+    print("\nAll preflight checks passed.\n")
+
+    # --- Explicit confirmation ---
+    print("=" * 60)
+    print(f"  ABOUT TO DIAL: {phone}")
+    print("  This is a LIVE call. The number will ring immediately.")
+    print("=" * 60)
+    try:
+        answer = input("\nType YES to confirm and dial, or anything else to abort: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\nAborted.")
+        return
+
+    if answer != "YES":
+        print("Aborted — you did not type YES.")
+        return
+
+    # --- Setup ---
+    cfg.validate()
+    logger = setup_logger()
+    call_logger = CallLogger()
+
+    profile_name    = args.profile or cfg.profile_name
+    loopback_device = args.loopback_device or cfg.loopback_device
+    callback_number = args.callback_number or cfg.callback_number
+    agent_name      = args.agent_name or cfg.agent_name
+    company_name    = args.company_name or cfg.company_name
+    company_context = args.company_context or cfg.company_context
+    company_website = cfg.company_website
+    call_timeout    = args.call_timeout or cfg.call_timeout
+    call_max_duration = args.call_max_duration or cfg.call_max_duration
+    capture_device  = args.capture_device or cfg.capture_device
+    tts_voice       = args.tts_voice or cfg.tts_voice
+
+    if not callback_number:
+        raise SystemExit(
+            "CALLBACK_NUMBER is not configured. Add it to .env or pass --callback-number."
+        )
+
+    ai = GroqAgent(api_key=cfg.groq_api_key, model=cfg.groq_model)
+    output_dir   = ensure_audio_dir(args.output_dir)
+    script_dir   = output_dir / "scripts"
+    voicemail_dir = output_dir / "voicemails"
+    script_dir.mkdir(parents=True, exist_ok=True)
+    voicemail_dir.mkdir(parents=True, exist_ok=True)
+
+    loopback_device_index = find_playable_loopback_device(loopback_device)
+    loopback_available    = loopback_device_index is not None
+    if not loopback_available:
+        logger.warning("Loopback device '%s' not found — audio injection disabled.", loopback_device)
+    if args.realtime and not loopback_available:
+        raise SystemExit(
+            "Realtime mode needs a loopback output device. "
+            "Install VB-CABLE or run with --static-playback."
+        )
+
+    contact = {"phone": phone, "name": "Safe-Test Contact"}
+
+    browser = GoogleVoiceBrowser(profile_name=profile_name, headless=args.headless)
+    logger.info("Launching Chrome for safe test call to %s", phone)
+    browser.launch()
+
+    if not browser.is_logged_in():
+        logger.warning("Google Voice not logged in — please sign in manually.")
+        if not browser.wait_for_manual_login(timeout=300):
+            browser.close()
+            raise SystemExit("Login timed out.")
+
+    try:
+        _run_call(
+            contact, 1, browser, ai, call_logger, logger,
+            script_dir, voicemail_dir,
+            args.objective, args.offer,
+            callback_number,
+            agent_name, company_name, company_context, company_website,
+            loopback_device, loopback_device_index, loopback_available,
+            call_timeout, call_max_duration,
+            dry_run=False,
+            realtime=args.realtime,
+            capture_device=capture_device,
+            tts_voice=tts_voice,
+            stt_model=cfg.stt_model,
+            vad_threshold=cfg.vad_threshold,
+            groq_api_key=cfg.groq_api_key,
+        )
+    finally:
+        browser.close()
+
+    logger.info("Safe test call completed.")
+
+
 def main() -> None:
     args = _parse_args()
     if args.list_audio_devices:
@@ -381,6 +516,11 @@ def main() -> None:
     cfg = Config.load()
     if args.preflight:
         raise SystemExit(_run_preflight(cfg))
+
+    # ---- Safe one-number test mode ----
+    if args.safe_test:
+        _run_safe_test(args, cfg)
+        return
 
     cfg.validate()
     logger = setup_logger()

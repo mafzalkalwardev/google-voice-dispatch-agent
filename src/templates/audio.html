@@ -34,6 +34,7 @@
           <th>Outputs</th>
           <th>Sample Rate</th>
           <th>Role</th>
+          <th>Output probe</th>
         </tr>
       </thead>
       <tbody>
@@ -55,6 +56,15 @@
               <span class="badge badge--slate">Output only</span>
             {% else %}
               <span class="badge badge--slate">Full duplex</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if d.probe_ok is none %}
+              <span class="badge badge--slate">—</span>
+            {% elif d.probe_ok %}
+              <span class="badge badge--green" title="{{ d.probe_detail }}">Playable</span>
+            {% else %}
+              <span class="badge badge--red" title="{{ d.probe_detail }}">Unavailable</span>
             {% endif %}
           </td>
         </tr>

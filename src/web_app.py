@@ -316,8 +316,19 @@ async def contacts_page(request: Request):
 async def audio_page(request: Request):
     cfg = _load_config()
     try:
-        from src.voice_playback import list_audio_devices  # type: ignore
-        devices = list_audio_devices()
+        from src.voice_playback import list_audio_devices, probe_output_device  # type: ignore
+        raw_devices = list_audio_devices()
+        devices = []
+        for d in raw_devices:
+            entry = dict(d)
+            if int(d.get("max_output_channels") or 0) > 0:
+                ok, detail = probe_output_device(d["index"])
+                entry["probe_ok"] = ok
+                entry["probe_detail"] = detail
+            else:
+                entry["probe_ok"] = None   # input-only — not probed
+                entry["probe_detail"] = ""
+            devices.append(entry)
     except Exception:
         devices = []
     return templates.TemplateResponse(request, "audio.html", {

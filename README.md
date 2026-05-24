@@ -158,6 +158,20 @@ python -m pytest tests/ -v
 
 ---
 
+## Records, Replies, and Outcomes
+
+The app saves operational records locally under `logs/`, which is ignored by Git.
+
+- Call outcome CSV: `logs/call_logs.csv`
+- Customer/agent transcript text: `logs/transcripts/<phone>_<timestamp>.txt`
+- App runtime logs: `logs/`
+
+A call is treated as picked up only after Google Voice exposes answered-call timer evidence. The hangup button alone is treated as ringing, not connected, so Tony should not speak while the outbound call is still ringing.
+
+Customer interest and details are currently captured in the transcript file and call log notes. For production sales work, the next improvement should add a structured lead summary file, for example `logs/leads.csv`, with fields like interest level, equipment type, lanes, callback time, objections, and follow-up action.
+
+---
+
 ## Safety & Compliance
 
 - Keep `.env`, `dialer_config.json`, contacts, audio, logs, and Chrome profiles out of Git.

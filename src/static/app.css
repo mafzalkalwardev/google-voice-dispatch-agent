@@ -479,6 +479,8 @@ code {
 .badge--amber      { background: rgba(245,158,11,.12);  color: #92400e; }
 .badge--blue       { background: rgba(59,130,246,.12);  color: #1e3a8a; }
 .badge--slate      { background: var(--surface-2);      color: var(--muted); }
+.badge--green      { background: rgba(16,185,129,.12);  color: #065f46; }
+.badge--red        { background: rgba(239,68,68,.12);   color: #991b1b; }
 
 /* ===========================
    FORMS

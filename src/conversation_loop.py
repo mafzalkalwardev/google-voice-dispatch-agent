@@ -34,6 +34,7 @@ import logging
 import queue
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
 from src.audio_capture     import AudioCapture
@@ -65,6 +66,7 @@ class ConversationLoop:
         vad_config: Optional[VADConfig] = None,
         calibrate_frames: int = 40,    # frames of silence for VAD calibration
         stt_prompt: str = "Indus Transports freight dispatch",
+        transcript_path: Optional[Path] = None,
     ):
         self.capture_device_hint = capture_device_hint
         self.tts   = tts
@@ -73,6 +75,7 @@ class ConversationLoop:
         self._vad  = EnergyVAD(vad_config or VADConfig())
         self._calibrate_frames = calibrate_frames
         self._stt_prompt = stt_prompt
+        self._transcript_path = transcript_path
 
         self._stop_event     = threading.Event()
         self._takeover_event = threading.Event()
@@ -81,6 +84,7 @@ class ConversationLoop:
         self._capture:  Optional[AudioCapture]   = None
         self._hotkeys:  Optional[HotkeyListener] = None
         self._session:  Optional[CallSession]    = None
+        self._transcript_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -113,6 +117,7 @@ class ConversationLoop:
             line = opening_line or self.agent.opening_line()
             if line:
                 logger.info("Tony (opening): %s", line)
+                self._write_transcript("Tony", line)
                 self.tts.speak(line)
 
         # Capture
@@ -151,6 +156,23 @@ class ConversationLoop:
 
     def in_takeover(self) -> bool:
         return self._takeover_event.is_set()
+
+    # ------------------------------------------------------------------ #
+    # Transcript helpers
+    # ------------------------------------------------------------------ #
+
+    def _write_transcript(self, speaker: str, text: str) -> None:
+        if not self._transcript_path or not text:
+            return
+        ts = time.strftime("%H:%M:%S")
+        line = f"[{ts}] {speaker}: {text}\n"
+        try:
+            with self._transcript_lock:
+                self._transcript_path.parent.mkdir(parents=True, exist_ok=True)
+                with self._transcript_path.open("a", encoding="utf-8") as fh:
+                    fh.write(line)
+        except OSError as exc:
+            logger.warning("Transcript write error: %s", exc)
 
     # ------------------------------------------------------------------ #
     # Hotkey handlers  (called from daemon threads)
@@ -231,12 +253,14 @@ class ConversationLoop:
             if not transcript:
                 continue
             logger.info("Prospect: %s", transcript)
+            self._write_transcript("Prospect", transcript)
 
             # LLM
             response = self.agent.respond_to(transcript)
             if not response:
                 continue
             logger.info("Tony: %s", response)
+            self._write_transcript("Tony", response)
 
             # TTS
             self.tts.speak_async(response)
@@ -249,6 +273,7 @@ class ConversationLoop:
                 goodbye = self.agent.goodbye_line()
                 if goodbye:
                     logger.info("Tony (goodbye): %s", goodbye)
+                    self._write_transcript("Tony", goodbye)
                     self.tts.speak(goodbye)
                 # Update session state
                 if self._session and not self._session.is_terminal():
