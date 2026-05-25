@@ -1,0 +1,343 @@
+{% extends "base.html" %}
+{% set active_page = "leads" %}
+
+{% block title %}Leads — INDUS TRANSPORTS LLC{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-header-left">
+    <h2 class="page-title">Leads</h2>
+    <p class="page-sub">Carrier leads extracted from call transcripts &mdash; {{ leads | length }} total</p>
+  </div>
+  <div class="quick-actions">
+    <a href="/api/leads/export" class="btn btn-secondary btn-sm">&#8595; Export CSV</a>
+    <button class="btn btn-primary btn-sm" onclick="openAddModal()">+ Add Lead</button>
+  </div>
+</div>
+
+<!-- Stats row -->
+<div class="card-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:1.25rem">
+  <div class="stat-card stat-card--slate">
+    <div class="stat-body">
+      <div class="stat-label">Total</div>
+      <div class="stat-value" id="statTotal">{{ leads | length }}</div>
+    </div>
+  </div>
+  <div class="stat-card stat-card--green">
+    <div class="stat-body">
+      <div class="stat-label">Interested</div>
+      <div class="stat-value" id="statYes">{{ leads | selectattr("interested", "equalto", "Yes") | list | length }}</div>
+    </div>
+  </div>
+  <div class="stat-card stat-card--amber">
+    <div class="stat-body">
+      <div class="stat-label">Maybe</div>
+      <div class="stat-value" id="statMaybe">{{ leads | selectattr("interested", "equalto", "Maybe") | list | length }}</div>
+    </div>
+  </div>
+  <div class="stat-card stat-card--red">
+    <div class="stat-body">
+      <div class="stat-label">Not Interest.</div>
+      <div class="stat-value" id="statNo">{{ leads | selectattr("interested", "equalto", "No") | list | length }}</div>
+    </div>
+  </div>
+  <div class="stat-card stat-card--dark">
+    <div class="stat-body">
+      <div class="stat-label">DNC</div>
+      <div class="stat-value" id="statDnc">{{ leads | selectattr("interested", "equalto", "DNC") | list | length }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- Table panel -->
+<div class="panel">
+  <div class="panel-header">
+    <h3 class="panel-title">Lead Records</h3>
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+      <input type="text" id="leadSearch" placeholder="Search name, phone, company…"
+             oninput="filterLeads()" class="log-filter-input" />
+      <select id="leadInterestFilter" onchange="filterLeads()" class="leads-filter-select">
+        <option value="">All Interest</option>
+        <option value="Yes">Interested</option>
+        <option value="Maybe">Maybe</option>
+        <option value="No">Not Interested</option>
+        <option value="DNC">DNC</option>
+        <option value="">Blank</option>
+      </select>
+      <button class="btn btn-secondary btn-sm" onclick="location.reload()">&#8635; Refresh</button>
+    </div>
+  </div>
+
+  {% if leads %}
+  <div class="table-wrap">
+    <table class="data-table" id="leadsTable">
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>Company</th>
+          <th>Contact</th>
+          <th>Phone</th>
+          <th>MC #</th>
+          <th>Email</th>
+          <th>Truck Type</th>
+          <th>Dimensions</th>
+          <th>Accessories</th>
+          <th>Lanes</th>
+          <th>Factoring</th>
+          <th>%</th>
+          <th>Interested</th>
+          <th>Callback</th>
+          <th>Close</th>
+          <th>Follow-up</th>
+          <th>Remarks</th>
+          <th>Outcome</th>
+          <th>Transcript</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="leadsTbody">
+        {% for row in leads %}
+        <tr data-search="{{ (row.company_name ~ ' ' ~ row.contact_name ~ ' ' ~ row.phone_number ~ ' ' ~ row.interested ~ ' ' ~ row.call_outcome ~ ' ' ~ row.mc_number ~ ' ' ~ row.truck_type ~ ' ' ~ row.preferred_lanes ~ ' ' ~ row.factoring_company ~ ' ' ~ row.post_call_summary) | lower }}"
+            data-interest="{{ row.interested }}">
+          <td class="td-mono td-nowrap">{{ row.timestamp }}</td>
+          <td class="td-name">{{ row.company_name or '—' }}</td>
+          <td>{{ row.contact_name or '—' }}</td>
+          <td class="td-mono">{{ row.phone_number or '—' }}</td>
+          <td class="td-mono">{{ row.mc_number or '—' }}</td>
+          <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ row.email }}">{{ row.email or '—' }}</td>
+          <td>{{ row.truck_type or '—' }}</td>
+          <td>{{ row.dimensions or row.truck_length or '—' }}</td>
+          <td class="td-notes">{{ row.accessories or '—' }}</td>
+          <td>{{ row.preferred_lanes or '—' }}</td>
+          <td>{{ row.factoring_company or '—' }}</td>
+          <td>{{ row.agreed_percentage or '—' }}</td>
+          <td>
+            {% if row.interested == 'Yes' %}<span class="badge badge--yes">Yes</span>
+            {% elif row.interested == 'Maybe' %}<span class="badge badge--maybe">Maybe</span>
+            {% elif row.interested == 'No' %}<span class="badge badge--no">No</span>
+            {% elif row.interested == 'DNC' %}<span class="badge badge--dnc">DNC</span>
+            {% else %}<span class="badge badge--slate">—</span>{% endif %}
+          </td>
+          <td class="td-nowrap">{{ row.callback_time or '—' }}</td>
+          <td>{{ row.close_probability or '—' }}</td>
+          <td class="td-notes">{{ row.best_follow_up_strategy or row.follow_up_notes or '—' }}</td>
+          <td class="td-notes">{{ row.remarks or '—' }}</td>
+          <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ row.call_outcome }}">{{ row.call_outcome or '—' }}</td>
+          <td>
+            {% if row.transcript_file %}
+            <span class="badge badge--blue" title="{{ row.transcript_file }}">saved</span>
+            {% else %}<span class="badge badge--slate">—</span>{% endif %}
+          </td>
+          <td style="white-space:nowrap">
+            <button class="btn btn-ghost btn-sm" onclick="openEditModal({{ loop.index0 }})">Edit</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <span class="empty-state-icon">&#128203;</span>
+    No leads yet. Leads are automatically extracted from transcripts after connected calls.<br>
+    <button class="btn btn-primary btn-sm" onclick="openAddModal()" style="margin-top:.75rem">+ Add Lead Manually</button>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Add / Edit Modal -->
+<div class="modal-backdrop" id="leadModal" style="display:none" onclick="if(event.target===this)closeModal()">
+  <div class="modal modal--wide">
+    <h3 class="modal-title" id="modalTitle">Add Lead</h3>
+    <form id="leadForm" onsubmit="submitLead(event)">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Contact Name</label>
+          <input type="text" name="contact_name" placeholder="John Smith" />
+        </div>
+        <div class="form-group">
+          <label>Company Name</label>
+          <input type="text" name="company_name" placeholder="ABC Trucking LLC" />
+        </div>
+        <div class="form-group">
+          <label>Phone Number</label>
+          <input type="tel" name="phone_number" placeholder="+17775551234" />
+        </div>
+        <div class="form-group">
+          <label>MC Number</label>
+          <input type="text" name="mc_number" placeholder="MC-123456" />
+        </div>
+        <div class="form-group">
+          <label>Email</label>
+          <input type="email" name="email" placeholder="john@example.com" />
+        </div>
+        <div class="form-group">
+          <label>Truck Type</label>
+          <input type="text" name="truck_type" placeholder="Dry Van / Flatbed / Reefer" />
+        </div>
+        <div class="form-group">
+          <label>Truck Length</label>
+          <input type="text" name="truck_length" placeholder="53ft" />
+        </div>
+        <div class="form-group">
+          <label>Dimensions</label>
+          <input type="text" name="dimensions" placeholder="53ft / 26ft / 12x6x6" />
+        </div>
+        <div class="form-group">
+          <label>Accessories</label>
+          <input type="text" name="accessories" placeholder="Tarps, chains, liftgate" />
+        </div>
+        <div class="form-group">
+          <label>Preferred Lanes</label>
+          <input type="text" name="preferred_lanes" placeholder="Chicago → Dallas" />
+        </div>
+        <div class="form-group">
+          <label>Local / OTR</label>
+          <input type="text" name="local_or_otr" placeholder="Local / Regional / OTR" />
+        </div>
+        <div class="form-group">
+          <label>Dispatcher Status</label>
+          <input type="text" name="dispatcher_status" placeholder="Self-dispatched / Has dispatcher" />
+        </div>
+        <div class="form-group">
+          <label>Factoring Company</label>
+          <input type="text" name="factoring_company" placeholder="OTR Capital / RTS / Quick pay" />
+        </div>
+        <div class="form-group">
+          <label>Agreed %</label>
+          <input type="text" name="agreed_percentage" placeholder="8%" />
+        </div>
+        <div class="form-group">
+          <label>Pricing Discussion</label>
+          <input type="text" name="pricing_discussion" placeholder="Asked for 8%, Tony countered 9%" />
+        </div>
+        <div class="form-group">
+          <label>Interested</label>
+          <select name="interested">
+            <option value="">— Select —</option>
+            <option value="Yes">Yes</option>
+            <option value="Maybe">Maybe</option>
+            <option value="No">No</option>
+            <option value="DNC">DNC</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Callback Time</label>
+          <input type="text" name="callback_time" placeholder="Thursday 2pm CST" />
+        </div>
+        <div class="form-group">
+          <label>Close Probability</label>
+          <input type="text" name="close_probability" placeholder="70%" />
+        </div>
+        <div class="form-group">
+          <label>Urgency</label>
+          <input type="text" name="urgency" placeholder="high / medium / low" />
+        </div>
+        <div class="form-group">
+          <label>Call Outcome</label>
+          <input type="text" name="call_outcome" placeholder="Interested — follow up" />
+        </div>
+        <div class="form-group form-group--wide">
+          <label>Remarks</label>
+          <textarea name="remarks" rows="2" placeholder="Any additional notes about this lead…"></textarea>
+        </div>
+        <div class="form-group form-group--wide">
+          <label>Objections</label>
+          <textarea name="objections" rows="2" placeholder="Price concern, already has dispatcher"></textarea>
+        </div>
+        <div class="form-group form-group--wide">
+          <label>Follow-up Notes</label>
+          <textarea name="follow_up_notes" rows="2" placeholder="Send one-pager, call Thursday after 2pm"></textarea>
+        </div>
+        <div class="form-group form-group--wide">
+          <label>Best Follow-up Strategy</label>
+          <textarea name="best_follow_up_strategy" rows="2" placeholder="Lead with strongest lane and pricing discussion"></textarea>
+        </div>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">Save Lead</button>
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <span class="form-actions-hint" id="modalMsg"></span>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const leadsData = {{ leads | tojson }};
+
+function filterLeads() {
+  const query = document.getElementById('leadSearch').value.toLowerCase();
+  const interest = document.getElementById('leadInterestFilter').value;
+  let vis = 0;
+  document.querySelectorAll('#leadsTbody tr').forEach(row => {
+    const search = row.getAttribute('data-search') || '';
+    const rowInterest = row.getAttribute('data-interest') || '';
+    const matchSearch = !query || search.includes(query);
+    const matchInterest = !interest || rowInterest === interest;
+    const show = matchSearch && matchInterest;
+    row.style.display = show ? '' : 'none';
+    if (show) vis++;
+  });
+}
+
+function openAddModal() {
+  document.getElementById('modalTitle').textContent = 'Add Lead';
+  document.getElementById('leadForm').reset();
+  document.getElementById('leadForm').dataset.editPhone = '';
+  document.getElementById('modalMsg').textContent = '';
+  document.getElementById('leadModal').style.display = 'flex';
+}
+
+function openEditModal(idx) {
+  const lead = leadsData[idx];
+  if (!lead) return;
+  document.getElementById('modalTitle').textContent = 'Edit Lead';
+  document.getElementById('modalMsg').textContent = '';
+  const form = document.getElementById('leadForm');
+  form.reset();
+  form.dataset.editPhone = lead.phone_number || '';
+  ['contact_name','company_name','phone_number','mc_number','email',
+   'truck_type','truck_length','dimensions','accessories','preferred_lanes',
+   'local_or_otr','dispatcher_status','factoring_company','pricing_discussion',
+   'agreed_percentage','interested','callback_time','close_probability','urgency',
+   'call_outcome','remarks','objections','follow_up_notes','best_follow_up_strategy'].forEach(f => {
+    const el = form.elements[f];
+    if (el) el.value = lead[f] || '';
+  });
+  document.getElementById('leadModal').style.display = 'flex';
+}
+
+function closeModal() {
+  document.getElementById('leadModal').style.display = 'none';
+}
+
+async function submitLead(e) {
+  e.preventDefault();
+  const form = e.target;
+  const data = Object.fromEntries(new FormData(form).entries());
+  const msg = document.getElementById('modalMsg');
+  msg.textContent = 'Saving…';
+  try {
+    const resp = await fetch('/api/leads', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(data),
+    });
+    const json = await resp.json();
+    if (json.ok) {
+      closeModal();
+      location.reload();
+    } else {
+      msg.textContent = 'Error: ' + (json.detail || 'Save failed');
+      msg.style.color = 'var(--red)';
+    }
+  } catch(err) {
+    msg.textContent = 'Network error: ' + err.message;
+    msg.style.color = 'var(--red)';
+  }
+}
+</script>
+{% endblock %}

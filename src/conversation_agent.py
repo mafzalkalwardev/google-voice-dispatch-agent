@@ -20,6 +20,13 @@ import logging
 from typing import Optional
 
 from groq import Groq
+from src.dispatcher_intelligence import (
+    DispatcherConversationState,
+    build_dynamic_system_prompt,
+    build_guardrail_reply,
+    build_pricing_reply,
+    update_state_from_utterance,
+)
 
 logger = logging.getLogger("GoogleVoiceAgent")
 
@@ -64,6 +71,22 @@ _NEGATIVE_SIGNALS = frozenset([
     "busy right now", "not a good time", "take me off",
 ])
 
+_MAX_TURNS_DEFAULT = 18
+_MAX_TURNS_ENGAGED = 40
+
+# Trucking-specific terms that indicate a genuine carrier conversation
+_ENGAGEMENT_KEYWORDS = frozenset([
+    "dry van", "flatbed", "reefer", "step deck", "hotshot", "box truck",
+    "sprinter van", "sprinter", "power only", "car hauler",
+    "own authority", "my mc", "mc number", "my authority",
+    "deadhead", "tonu", "detention", "drop hook", "drop and hook",
+    "loadboard", "load board",
+    "factoring", "quick pay",
+    "what percent", "your percent", "what do you charge", "what's your fee",
+    "preferred lanes", "what lanes",
+    "rpm", "rate per mile",
+])
+
 
 def _clean_spoken_text(text: str) -> str:
     text = (text or "").strip()
@@ -92,17 +115,17 @@ class ConversationAgent:
         self._client = Groq(api_key=api_key)
         self.model = model
         self.agent_name = agent_name
+        self.company_name = company_name
+        self.company_context = company_context or "Freight dispatch services for owner-operators."
+        self.company_website = company_website or ""
+        self.callback_number = callback_number
         self.contact_name = contact_name
-        self._system = _SYSTEM_TEMPLATE.format(
-            agent_name=agent_name,
-            company_name=company_name,
-            company_context=company_context or "Freight dispatch services for owner-operators.",
-            company_website=company_website or "",
-            callback_number=callback_number,
-        )
+        self.state = DispatcherConversationState()
+        self._system = self._build_system_prompt()
         self._history: list[dict] = []
         self._turn_count: int = 0
         self._consecutive_negatives: int = 0
+        self._engaged: bool = False
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -125,20 +148,33 @@ class ConversationAgent:
         """
         self._history.append({"role": "user", "content": prospect_text})
         self._turn_count += 1
+        update_state_from_utterance(self.state, prospect_text)
 
         text_lower = prospect_text.lower()
+        if not self._engaged and any(kw in text_lower for kw in _ENGAGEMENT_KEYWORDS):
+            self._engaged = True
+
         if any(signal in text_lower for signal in _NEGATIVE_SIGNALS):
             self._consecutive_negatives += 1
         else:
             self._consecutive_negatives = 0
 
-        reply = self._complete()
+        reply = (
+            build_guardrail_reply(self.state, prospect_text)
+            or build_pricing_reply(self.state, prospect_text)
+            or self._complete()
+        )
         self._history.append({"role": "assistant", "content": reply})
         return reply
 
     def should_end_call(self) -> bool:
         """True when the agent should politely wrap up the call."""
-        return self._consecutive_negatives >= 3 or self._turn_count > 18
+        max_turns = _MAX_TURNS_ENGAGED if self._engaged else _MAX_TURNS_DEFAULT
+        return (
+            self.state.interest_level == "DNC"
+            or self._consecutive_negatives >= 2
+            or self._turn_count > max_turns
+        )
 
     def goodbye_line(self) -> str:
         """Short, warm closing line."""
@@ -151,21 +187,57 @@ class ConversationAgent:
         self._history.clear()
         self._turn_count = 0
         self._consecutive_negatives = 0
+        self._engaged = False
         self.contact_name = contact_name
+        self.state = DispatcherConversationState()
+        self._system = self._build_system_prompt()
+
+    def state_snapshot(self) -> dict:
+        """Return confirmed conversation state for logs/tests."""
+        return {
+            "truck_type": self.state.truck_type,
+            "interest_level": self.state.interest_level,
+            "objections": list(self.state.objections),
+            "negotiated_percentage": self.state.negotiated_percentage,
+            "local_or_otr": self.state.local_or_otr,
+            "preferred_lanes": self.state.preferred_lanes,
+            "dispatcher_status": self.state.dispatcher_status,
+            "follow_up_status": self.state.follow_up_status,
+            "mc_number": self.state.mc_number,
+            "dimensions": self.state.dimensions,
+            "accessories": self.state.accessories,
+            "email": self.state.email,
+            "factoring_company": self.state.factoring_company,
+            "carrier_style": self.state.carrier_style,
+        }
 
     # ------------------------------------------------------------------ #
     # Internal
     # ------------------------------------------------------------------ #
 
+    def _build_system_prompt(self) -> str:
+        return build_dynamic_system_prompt(
+            agent_name=self.agent_name,
+            company_name=self.company_name,
+            company_website=self.company_website,
+            callback_number=self.callback_number,
+            company_context=self.company_context,
+            contact_name=self.contact_name,
+            state=self.state,
+        )
+
     def _complete(self) -> str:
+        self._system = self._build_system_prompt()
         messages = [{"role": "system", "content": self._system}]
-        messages.extend(self._history[-20:])   # rolling 20-turn window
+        messages.extend(self._history[-30:])   # long-call memory window plus state summary
+        max_tokens = 65 if self.state.carrier_style == "rushed" else 150
+        temperature = 0.68 if self.state.carrier_style == "skeptical" else 0.78
         try:
             resp = self._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                max_tokens=80,
-                temperature=0.78,
+                max_tokens=max_tokens,
+                temperature=temperature,
             )
             return _clean_spoken_text(resp.choices[0].message.content)
         except Exception as exc:
@@ -173,6 +245,7 @@ class ConversationAgent:
             return "Sorry, could you repeat that?"
 
     def _raw_complete(self, user_prompt: str, max_tokens: int = 80) -> str:
+        self._system = self._build_system_prompt()
         try:
             resp = self._client.chat.completions.create(
                 model=self.model,

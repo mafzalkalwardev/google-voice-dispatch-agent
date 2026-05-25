@@ -52,7 +52,14 @@ class RealtimeTTS:
         self._speaking = threading.Event()
 
         engine = "edge-tts" if self._use_edge else "pyttsx3"
-        logger.info("RealtimeTTS: engine=%s voice=%s device=[%d]", engine, voice, device_index)
+        from src.voice_playback import describe_audio_device
+
+        logger.info(
+            "RealtimeTTS: engine=%s voice=%s selected_output_device=%s",
+            engine,
+            voice,
+            describe_audio_device(device_index),
+        )
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -61,6 +68,7 @@ class RealtimeTTS:
     def speak(self, text: str, interrupt: bool = True) -> None:
         """Synthesise and play synchronously. Blocks until playback completes."""
         if not text.strip():
+            logger.info("RealtimeTTS: empty text skipped")
             return
         if interrupt:
             self.stop()
@@ -98,12 +106,20 @@ class RealtimeTTS:
     def _play(self, text: str) -> None:
         if self._use_edge:
             try:
+                logger.info("RealtimeTTS: generating speech with edge-tts (%d chars)", len(text))
                 data, rate = _edge_synthesize(text, self.voice)
             except Exception as exc:
                 logger.warning("edge-tts synthesis failed (%s); falling back to pyttsx3", exc)
             else:
+                duration = len(data) / float(rate) if rate else 0.0
+                logger.info(
+                    "RealtimeTTS: audio generated in memory (engine=edge-tts, rate=%d, duration=%.2fs)",
+                    rate,
+                    duration,
+                )
                 _play_numpy_to_device(data, rate, self.device_index)
                 return
+        logger.info("RealtimeTTS: generating fallback TTS WAV with pyttsx3 (%d chars)", len(text))
         _pyttsx3_to_device(text, self.device_index)
 
 
@@ -202,6 +218,7 @@ def _pyttsx3_to_device(text: str, device_index: int) -> None:
         tmp = Path(tf.name)
     try:
         save_text_to_speech(text, tmp)
+        logger.info("RealtimeTTS: TTS file generated for playback: %s", tmp)
         play_wav_to_device(tmp, device_index, block=True)
     finally:
         tmp.unlink(missing_ok=True)

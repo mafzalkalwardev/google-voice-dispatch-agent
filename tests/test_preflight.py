@@ -178,17 +178,18 @@ def test_check_callback_ok(monkeypatch):
 
 # ── run_all ──────────────────────────────────────────────────────────────────
 
-def test_run_all_returns_six_results(monkeypatch):
+def test_run_all_returns_seven_results(monkeypatch):
     monkeypatch.setenv("CALLBACK_NUMBER", "+15551234567")
     with patch("src.preflight.check_env") as ce, \
          patch("src.preflight.check_groq_api") as cg, \
          patch("src.preflight.check_contacts") as cc, \
          patch("src.preflight.check_chrome_profile") as cp, \
          patch("src.preflight.check_audio_loopback") as ca, \
+         patch("src.preflight.check_capture_device") as ccap, \
          patch("src.preflight.check_callback_number") as cn:
         from src.preflight import CheckResult
-        for mock in (ce, cg, cc, cp, ca, cn):
+        for mock in (ce, cg, cc, cp, ca, ccap, cn):
             mock.return_value = CheckResult("X", "ok", "ok")
         from src.preflight import run_all
         results = run_all()
-        assert len(results) == 6
+        assert len(results) == 7

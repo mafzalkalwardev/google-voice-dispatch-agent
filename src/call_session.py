@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 
@@ -41,6 +42,7 @@ class CallSession:
     ended_at: Optional[datetime] = None
     outcome: str = ""
     notes: list[str] = field(default_factory=list)
+    transcript_path: Optional[Path] = None
 
     def transition(self, new_state: CallState, note: str = "") -> None:
         allowed = _ALLOWED.get(self.state, set())

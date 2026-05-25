@@ -39,6 +39,21 @@ def list_audio_devices() -> list[dict]:
         return []
 
 
+def describe_audio_device(device_index: int) -> str:
+    """Return a stable human-readable PortAudio device description."""
+    try:
+        import sounddevice as sd
+
+        d = sd.query_devices(device_index)
+        return (
+            f"[{device_index}] {d['name']} "
+            f"(in={d['max_input_channels']}, out={d['max_output_channels']}, "
+            f"rate={int(d['default_samplerate'])})"
+        )
+    except Exception as exc:
+        return f"[{device_index}] <unavailable: {exc}>"
+
+
 def find_loopback_devices(name_hint: str = "CABLE Input") -> list[int]:
     """Return all output device indexes matching name_hint, in discovery order."""
     matches = []
@@ -89,7 +104,12 @@ def find_playable_loopback_device(name_hint: str = "CABLE Input") -> Optional[in
     for device_index in find_loopback_devices(name_hint):
         ok, detail = probe_output_device(device_index)
         if ok:
-            logger.info("Loopback device ready: %s", detail)
+            logger.info(
+                "Selected output device for LOOPBACK_DEVICE='%s': %s (%s)",
+                name_hint,
+                describe_audio_device(device_index),
+                detail,
+            )
             return device_index
         logger.warning("Loopback device [%d] is not playable: %s", device_index, detail)
     return None
@@ -188,8 +208,16 @@ def _stream_audio_to_device(
         data = _resample_audio(data, int(samplerate), target_rate)
     channels = _device_output_channels(sd, device_index)
     data = _match_output_channels(data, channels)
+    duration = len(data) / float(target_rate) if target_rate else 0.0
 
     def _write() -> None:
+        logger.info(
+            "TTS playback started: device=%s duration=%.2fs rate=%d channels=%d",
+            describe_audio_device(device_index),
+            duration,
+            target_rate,
+            channels,
+        )
         with sd.OutputStream(
             device=device_index,
             samplerate=target_rate,
@@ -197,6 +225,11 @@ def _stream_audio_to_device(
             dtype="float32",
         ) as stream:
             stream.write(data)
+        logger.info(
+            "TTS playback finished: device=[%d] duration=%.2fs",
+            device_index,
+            duration,
+        )
 
     if block:
         _write()

@@ -37,7 +37,7 @@ def save_text_to_speech(text: str, output_path: str | Path) -> Path:
     if not output_path.exists() or output_path.stat().st_size == 0:
         raise RuntimeError(f"TTS produced no output at {output_path}")
 
-    logger.debug("TTS saved: %s (%d bytes)", output_path, output_path.stat().st_size)
+    logger.info("TTS file generated: %s (%d bytes)", output_path, output_path.stat().st_size)
     return output_path
 
 

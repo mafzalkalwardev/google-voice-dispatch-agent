@@ -83,6 +83,7 @@ def _run_preflight(cfg: Config) -> int:
         contacts_file=cfg.contacts_file,
         profile_name=cfg.profile_name,
         loopback_device=cfg.loopback_device,
+        capture_device=cfg.capture_device,
     )
     worst = 0
     for result in results:
@@ -159,6 +160,7 @@ def _run_call(
 
     logger.info("[%d] Preparing AI audio assets for %s (%s)", index, name, phone)
     script_path: Path | None = None
+    opening_line: str | None = None
     if not realtime:
         script_text = ai.generate_call_script(
             contact_name=name,
@@ -173,6 +175,19 @@ def _run_call(
         script_text_path = script_path.with_suffix(".txt")
         script_text_path.write_text(script_text, encoding="utf-8")
         save_text_to_speech(script_text, script_path)
+    else:
+        opening_line = _generate_realtime_opening_line(
+            contact_name=name,
+            groq_api_key=groq_api_key,
+            groq_model=ai.model,
+            agent_name=agent_name,
+            company_name=company_name,
+            company_context=company_context,
+            company_website=company_website,
+            callback_number=callback_number,
+            logger=logger,
+            index=index,
+        )
 
     voicemail_text = ai.generate_voicemail(
         contact_name=name,
@@ -234,6 +249,7 @@ def _run_call(
                 tts_voice=tts_voice,
                 stt_model=stt_model,
                 vad_threshold=vad_threshold,
+                opening_line=opening_line,
                 browser=browser,
                 call_max_duration=call_max_duration,
                 logger=logger,
@@ -289,6 +305,93 @@ def _run_call(
         session.connected_duration_seconds() or 0.0,
     )
 
+    if realtime:
+        _extract_and_upsert_lead(
+            session=session,
+            contact=contact,
+            groq_api_key=groq_api_key,
+            model=ai.model,
+            logger=logger,
+            index=index,
+        )
+
+
+def _extract_and_upsert_lead(
+    session: CallSession,
+    contact: dict,
+    groq_api_key: str,
+    model: str,
+    logger: logging.Logger,
+    index: int,
+) -> None:
+    """Extract structured lead data after a realtime call transcript is saved."""
+    if not session.transcript_path or not groq_api_key:
+        return
+    try:
+        from src.leads import extract_lead_from_transcript, upsert_lead  # type: ignore
+
+        lead = extract_lead_from_transcript(
+            transcript_path=session.transcript_path,
+            contact=contact,
+            groq_api_key=groq_api_key,
+            model=model,
+        )
+        lead["phone_number"] = session.phone
+        lead["contact_name"] = lead.get("contact_name") or session.contact_name
+        lead["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        lead["transcript_file"] = str(session.transcript_path)
+        if not lead.get("call_outcome"):
+            lead["call_outcome"] = session.outcome or session.state.value
+        upsert_lead(lead)
+        logger.info("[%d] Lead upserted for %s", index, session.phone)
+    except Exception as exc:
+        logger.warning("[%d] Lead extraction error: %s", index, exc)
+
+
+def _fallback_opening_line(agent_name: str, company_name: str) -> str:
+    return f"Hi, this is {agent_name} with {company_name}, calling about freight dispatch."
+
+
+def _generate_realtime_opening_line(
+    contact_name: str,
+    groq_api_key: str,
+    groq_model: str,
+    agent_name: str,
+    company_name: str,
+    company_context: str,
+    company_website: str,
+    callback_number: str,
+    logger: logging.Logger,
+    index: int,
+) -> str:
+    """Prepare the first spoken line before dialing so pickup is not silent."""
+    fallback = _fallback_opening_line(agent_name, company_name)
+    try:
+        from src.conversation_agent import ConversationAgent
+
+        logger.info("[%d] Opening line generation started before dialing", index)
+        agent = ConversationAgent(
+            api_key=groq_api_key,
+            model=groq_model,
+            agent_name=agent_name,
+            company_name=company_name,
+            company_context=company_context,
+            company_website=company_website,
+            callback_number=callback_number,
+            contact_name=contact_name,
+        )
+        line = agent.opening_line()
+    except Exception as exc:
+        logger.error("[%d] Opening line generation failed: %s", index, exc)
+        line = ""
+
+    if not line:
+        line = fallback
+        logger.warning("[%d] Opening line empty; using fallback: %s", index, line)
+    else:
+        logger.info("[%d] Opening line generated before dialing: %s", index, line)
+    return line
+
 
 def _run_realtime_loop(
     session: CallSession,
@@ -305,6 +408,7 @@ def _run_realtime_loop(
     tts_voice: str,
     stt_model: str,
     vad_threshold: float,
+    opening_line: str | None,
     browser: GoogleVoiceBrowser,
     call_max_duration: int,
     logger: logging.Logger,
@@ -314,15 +418,19 @@ def _run_realtime_loop(
     from src.realtime_tts import RealtimeTTS, validate_tts_output_device
     from src.stt import GroqWhisperSTT
     from src.vad import VADConfig
+    from src.voice_playback import describe_audio_device
 
     # Build transcript path: logs/transcripts/<phone>_<timestamp>.txt
     # The logs/ directory is git-ignored; transcripts are never committed.
     transcript_ts = time.strftime("%Y%m%d_%H%M%S")
     safe_phone = session.phone.replace("+", "").replace(" ", "")
     transcript_path = BASE_DIR / "logs" / "transcripts" / f"{safe_phone}_{transcript_ts}.txt"
+    session.transcript_path = transcript_path
 
     try:
         validate_tts_output_device(loopback_device_index)
+        logger.info("Realtime selected output device: %s", describe_audio_device(loopback_device_index))
+        logger.info("Realtime selected capture device: CAPTURE_DEVICE='%s'", capture_device)
         tts = RealtimeTTS(device_index=loopback_device_index, voice=tts_voice)
         agent = ConversationAgent(
             api_key=groq_api_key,
@@ -363,7 +471,7 @@ def _run_realtime_loop(
     try:
         logger.info("Answered call confirmed; waiting briefly before opening line.")
         time.sleep(1.5)
-        loop.run(session=session, auto_opening=True)
+        loop.run(session=session, opening_line=opening_line, auto_opening=True)
     except Exception as exc:
         logger.error("Realtime loop error: %s", exc)
         if not session.is_terminal():
@@ -670,6 +778,10 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
             browser.close()
             raise SystemExit("Login timed out.")
 
+    # Warn if Chrome's mic is not CABLE Output — without this Tony's audio never reaches the call.
+    _cable_out = loopback_device.replace("Input", "Output").replace("INPUT", "OUTPUT")
+    browser.warn_if_mic_not_set(_cable_out)
+
     try:
         _run_call(
             contact, 1, browser, ai, call_logger, logger,
@@ -799,6 +911,10 @@ def main() -> None:
         if not browser.wait_for_manual_login(timeout=300):
             browser.close()
             raise SystemExit("Login timed out after 5 minutes.")
+
+    # Warn if Chrome's mic is not CABLE Output — without this Tony's audio never reaches the call.
+    _cable_out = loopback_device.replace("Input", "Output").replace("INPUT", "OUTPUT")
+    browser.warn_if_mic_not_set(_cable_out)
 
     logger.info("Logged in. Starting call loop (%d contacts).", min(len(contacts), args.limit))
 

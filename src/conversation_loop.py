@@ -114,11 +114,15 @@ class ConversationLoop:
 
         # Opening line (plays before capture starts so we don't echo ourselves)
         if auto_opening:
+            logger.info("Opening line generation started")
             line = opening_line or self.agent.opening_line()
             if line:
+                logger.info("Opening line generated: %s", line)
                 logger.info("Tony (opening): %s", line)
                 self._write_transcript("Tony", line)
                 self.tts.speak(line)
+            else:
+                logger.warning("Opening line generated empty; no opening TTS will play")
 
         # Capture
         self._capture = AudioCapture(
@@ -203,6 +207,11 @@ class ConversationLoop:
         calibration: list = []
 
         while not self._stop_event.is_set():
+            capture_error = self._capture.last_error
+            if isinstance(capture_error, BaseException):
+                logger.error("STT capture failed: %s", capture_error)
+                self.stop()
+                return
             frame = self._capture.read(timeout=0.05)
             if frame is None:
                 continue
@@ -245,12 +254,17 @@ class ConversationLoop:
                 continue
 
             # STT
-            transcript = self.stt.transcribe(
-                audio_segment,
-                samplerate=_SAMPLERATE,
-                prompt=self._stt_prompt,
-            )
+            try:
+                transcript = self.stt.transcribe(
+                    audio_segment,
+                    samplerate=_SAMPLERATE,
+                    prompt=self._stt_prompt,
+                )
+            except Exception as exc:
+                logger.error("STT failed: %s", exc)
+                continue
             if not transcript:
+                logger.info("STT empty: no transcript for %.2fs segment", len(audio_segment) / _SAMPLERATE)
                 continue
             logger.info("Prospect: %s", transcript)
             self._write_transcript("Prospect", transcript)

@@ -106,6 +106,71 @@ def check_audio_loopback(device_hint: Optional[str] = None) -> CheckResult:
         return CheckResult("Audio Loopback", "fail", f"Audio check error: {exc}")
 
 
+def check_capture_device(device_hint: Optional[str] = None) -> CheckResult:
+    """
+    Verify Python's prospect-audio capture path for realtime STT.
+    CAPTURE_DEVICE is not the Chrome/Google Voice microphone selector.
+
+    Audio flow: TTS → CABLE Input (output) → VB-CABLE → CABLE Output (input) → Chrome mic.
+    Chrome must use CABLE Output as its microphone for voice.google.com; if it uses the
+    laptop mic instead, Tony's voice never reaches the call.
+    """
+    hint = device_hint or os.getenv("CAPTURE_DEVICE", "default")
+    if not hint or hint.lower() in ("default", "wasapi", "default (wasapi)"):
+        try:
+            import soundcard as sc  # type: ignore
+            speaker = sc.default_speaker()
+            speaker_name = getattr(speaker, "name", "unknown speaker")
+            status = "warn" if "cable input" in str(speaker_name).lower() else "ok"
+            message = (
+                f"CAPTURE_DEVICE='{hint}' uses WASAPI loopback of Windows default speaker: "
+                f"{speaker_name}. Chrome's Google Voice mic still must be CABLE Output."
+            )
+            if status == "warn":
+                message += (
+                    " Default speaker is the TTS cable, so STT may hear Tony/silence. "
+                    "Use real speakers for single-cable capture or a second cable for prospect audio."
+                )
+            return CheckResult("Capture Device", status, message)
+        except ImportError:
+            return CheckResult(
+                "Capture Device", "fail",
+                "CAPTURE_DEVICE='default' needs soundcard for WASAPI loopback. "
+                "Run: pip install soundcard",
+            )
+        except Exception as exc:
+            return CheckResult("Capture Device", "warn", f"WASAPI capture check error: {exc}")
+        return CheckResult(
+            "Capture Device", "warn",
+            f"CAPTURE_DEVICE is '{hint}' — Chrome will fall back to the Windows default mic. "
+            "Set CAPTURE_DEVICE to 'CABLE Output' so Tony's TTS reaches the call, "
+            "then set Chrome mic to 'CABLE Output' for voice.google.com.",
+        )
+    try:
+        import sounddevice as sd
+        devices = sd.query_devices()
+        hint_lower = hint.lower()
+        matches = [
+            d for d in devices
+            if hint_lower in d["name"].lower() and d["max_input_channels"] > 0
+        ]
+        if not matches:
+            return CheckResult(
+                "Capture Device", "fail",
+                f"'{hint}' not found as a recording device. "
+                "Install VB-CABLE (https://vb-audio.com/Cable/), then set Chrome mic "
+                "to 'CABLE Output' for voice.google.com.",
+            )
+        dev = matches[0]
+        return CheckResult(
+            "Capture Device", "ok",
+            f"'{dev['name']}' found as recording device — "
+            "confirm Chrome mic is set to this device for voice.google.com.",
+        )
+    except Exception as exc:
+        return CheckResult("Capture Device", "warn", f"Capture device check error: {exc}")
+
+
 def check_callback_number() -> CheckResult:
     number = os.getenv("CALLBACK_NUMBER", os.getenv("GOOGLE_VOICE_NUMBER", ""))
     # also check dialer_config.json
@@ -129,6 +194,7 @@ def run_all(
     contacts_file: Optional[Path] = None,
     profile_name: Optional[str] = None,
     loopback_device: Optional[str] = None,
+    capture_device: Optional[str] = None,
 ) -> List[CheckResult]:
     return [
         check_env(),
@@ -136,5 +202,6 @@ def run_all(
         check_contacts(contacts_file),
         check_chrome_profile(profile_name),
         check_audio_loopback(loopback_device),
+        check_capture_device(capture_device),
         check_callback_number(),
     ]

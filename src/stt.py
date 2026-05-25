@@ -58,9 +58,16 @@ class GroqWhisperSTT:
         Returns the transcript string, or "" if too short / empty result.
         """
         duration = len(audio) / max(samplerate, 1)
+        logger.info(
+            "STT started: model=%s language=%s duration=%.2fs samplerate=%d",
+            self.model,
+            self.language,
+            duration,
+            samplerate,
+        )
 
         if duration < _MIN_DURATION_S:
-            logger.debug("STT skip: too short (%.2fs)", duration)
+            logger.info("STT empty: audio too short (%.2fs)", duration)
             return ""
 
         if duration > _MAX_DURATION_S:
@@ -81,9 +88,14 @@ class GroqWhisperSTT:
 
             result = self._client.audio.transcriptions.create(**kwargs)
             text = getattr(result, "text", result)
-            return str(text).strip()
+            transcript = str(text).strip()
+            if transcript:
+                logger.info("STT result: %s", transcript)
+            else:
+                logger.info("STT empty: transcription returned no text")
+            return transcript
         except Exception as exc:
-            logger.error("Groq STT error: %s", exc)
+            logger.error("STT failed: %s", exc)
             return ""
 
 

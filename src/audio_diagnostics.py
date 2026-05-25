@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("GoogleVoiceAgent")
@@ -93,6 +95,142 @@ def run_diagnostics(
         "issues":         issues,
         "suggestions":    suggestions,
         "ok":             len(issues) == 0,
+    }
+
+
+def play_test_tts(
+    output_hint: str = "CABLE Input",
+    text: str = (
+        "Indus Transports audio test. If Google Voice microphone uses CABLE Output, "
+        "the caller can hear this."
+    ),
+    output_dir: Optional[Path] = None,
+) -> dict:
+    """Generate a short TTS WAV and play it to the configured loopback output."""
+    from src.paths import runtime_base
+    from src.tts import save_text_to_speech
+    from src.voice_playback import (
+        describe_audio_device,
+        find_playable_loopback_device,
+        play_wav_to_device,
+    )
+
+    diagnostics_dir = Path(output_dir or (runtime_base() / "audio" / "diagnostics"))
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    wav_path = diagnostics_dir / f"tts_loopback_test_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+
+    logger.info("Audio test: generating TTS file for LOOPBACK_DEVICE='%s'", output_hint)
+    save_text_to_speech(text, wav_path)
+    device_index = find_playable_loopback_device(output_hint)
+    if device_index is None:
+        raise RuntimeError(f"No playable LOOPBACK_DEVICE found for '{output_hint}'")
+
+    selected_device = describe_audio_device(device_index)
+    logger.info("Audio test: playing TTS file to selected output device %s", selected_device)
+    duration = play_wav_to_device(wav_path, device_index, block=True)
+    return {
+        "ok": True,
+        "wav_path": str(wav_path),
+        "duration_s": duration,
+        "selected_output_device": selected_device,
+    }
+
+
+def record_capture_sample(
+    capture_hint: str = "default",
+    duration_s: float = 5.0,
+    stt_api_key: str = "",
+    stt_model: str = "whisper-large-v3-turbo",
+    output_dir: Optional[Path] = None,
+) -> dict:
+    """Record a short sample from CAPTURE_DEVICE and optionally transcribe it."""
+    import numpy as np
+    import soundfile as sf
+
+    from src.audio_capture import AudioCapture
+    from src.paths import runtime_base
+    from src.stt import GroqWhisperSTT
+
+    samplerate = 16000
+    diagnostics_dir = Path(output_dir or (runtime_base() / "audio" / "diagnostics"))
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+    wav_path = diagnostics_dir / f"capture_test_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+
+    logger.info(
+        "Audio test: recording %.1fs from CAPTURE_DEVICE='%s'",
+        duration_s,
+        capture_hint,
+    )
+    cap = AudioCapture(device_name_hint=capture_hint, samplerate=samplerate)
+    frames: list[np.ndarray] = []
+    cap.start()
+    try:
+        deadline = time.monotonic() + max(0.1, duration_s)
+        while time.monotonic() < deadline:
+            if cap.last_error is not None:
+                raise RuntimeError(f"Capture failed: {cap.last_error}")
+            frame = cap.read(timeout=0.2)
+            if frame is not None:
+                frames.append(frame)
+    finally:
+        cap.stop()
+
+    if frames:
+        audio = np.concatenate(frames).astype(np.float32)
+    else:
+        audio = np.zeros(0, dtype=np.float32)
+
+    if audio.size == 0:
+        logger.warning("Audio test: capture returned no frames")
+        sf.write(str(wav_path), audio, samplerate)
+        return {
+            "ok": False,
+            "wav_path": str(wav_path),
+            "duration_s": 0.0,
+            "rms": 0.0,
+            "peak": 0.0,
+            "stt_text": "",
+            "stt_error": "No audio frames captured",
+            "capture_device": capture_hint,
+        }
+
+    rms = float(np.sqrt(np.mean(np.square(audio))))
+    peak = float(np.max(np.abs(audio)))
+    recorded_duration = len(audio) / float(samplerate)
+    sf.write(str(wav_path), audio, samplerate)
+    logger.info(
+        "Audio test: capture file generated: %s (duration=%.2fs rms=%.5f peak=%.5f)",
+        wav_path,
+        recorded_duration,
+        rms,
+        peak,
+    )
+
+    stt_text = ""
+    stt_error = ""
+    if stt_api_key:
+        logger.info("Audio test: STT started for capture sample")
+        try:
+            stt = GroqWhisperSTT(api_key=stt_api_key, model=stt_model)
+            stt_text = stt.transcribe(audio, samplerate=samplerate)
+            if not stt_text:
+                logger.info("Audio test: STT empty for capture sample")
+        except Exception as exc:
+            stt_error = str(exc)
+            logger.error("Audio test: STT failed for capture sample: %s", exc)
+    else:
+        stt_error = "GROQ_API_KEY is not set; recording saved but STT was skipped"
+        logger.warning("Audio test: %s", stt_error)
+
+    return {
+        "ok": True,
+        "wav_path": str(wav_path),
+        "duration_s": recorded_duration,
+        "rms": rms,
+        "peak": peak,
+        "stt_text": stt_text,
+        "stt_error": stt_error,
+        "capture_device": capture_hint,
     }
 
 

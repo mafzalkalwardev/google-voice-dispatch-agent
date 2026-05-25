@@ -117,11 +117,31 @@ class AudioCapture:
             )
 
         speaker = sc.default_speaker()
-        logger.info("WASAPI loopback from speaker: %s", speaker.name)
+        try:
+            mic = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not open WASAPI loopback capture for default speaker "
+                f"'{speaker.name}': {exc}"
+            ) from exc
 
-        with speaker.recorder(samplerate=self.samplerate) as mic:
+        logger.info(
+            "Selected capture device for CAPTURE_DEVICE='%s': WASAPI loopback of default speaker '%s'",
+            self.device_name_hint,
+            speaker.name,
+        )
+        if "cable input" in str(speaker.name).lower():
+            logger.warning(
+                "CAPTURE_DEVICE=default is loopbacking '%s'. This records whatever is "
+                "played to the TTS cable, so STT may hear Tony or silence instead of the prospect. "
+                "For single-cable routing, keep Windows/Chrome speaker on real speakers; "
+                "for cleaner routing use a second cable and set CAPTURE_DEVICE to that cable output.",
+                speaker.name,
+            )
+
+        with mic.recorder(samplerate=self.samplerate) as recorder:
             while not self._stop.is_set():
-                data = mic.record(numframes=self.frame_size)
+                data = recorder.record(numframes=self.frame_size)
                 if data.ndim > 1:
                     data = data.mean(axis=1)         # stereo → mono
                 self._put(data.astype(np.float32))
@@ -133,7 +153,7 @@ class AudioCapture:
         except ImportError:
             raise RuntimeError("sounddevice not installed. Run: pip install sounddevice")
 
-        from src.voice_playback import list_audio_devices
+        from src.voice_playback import describe_audio_device, list_audio_devices
 
         device_idx: Optional[int] = None
         for d in list_audio_devices():
@@ -142,7 +162,11 @@ class AudioCapture:
                 and d["max_input_channels"] > 0
             ):
                 device_idx = d["index"]
-                logger.info("Capturing from [%d] %s", d["index"], d["name"])
+                logger.info(
+                    "Selected capture device for CAPTURE_DEVICE='%s': %s",
+                    self.device_name_hint,
+                    describe_audio_device(device_idx),
+                )
                 break
 
         if device_idx is None:

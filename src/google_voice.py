@@ -70,15 +70,21 @@ _SEL = {
         "button.call-button",
     ],
     "hangup_button": [
-        'button[aria-label*="end" i]',
-        'button[aria-label*="hang" i]',
+        'button[aria-label*="Hang up" i]',
+        'button[aria-label*="Hangup" i]',
+        'button[aria-label*="End call" i]',
+        'button[title*="Hang up" i]',
+        'button[title*="End call" i]',
         "gv-icon-button[icon-name='call_end']",
         '[data-action="end-call"]',
         "button.end-call",
     ],
     "call_active": [
-        'button[aria-label*="end" i]',
-        'button[aria-label*="hang" i]',
+        'button[aria-label*="Hang up" i]',
+        'button[aria-label*="Hangup" i]',
+        'button[aria-label*="End call" i]',
+        'button[title*="Hang up" i]',
+        'button[title*="End call" i]',
         "gv-icon-button[icon-name='call_end']",
         '[data-action="end-call"]',
     ],
@@ -127,7 +133,9 @@ _VOICEMAIL_PAGE_PHRASES = [
 ]
 
 _DURATION_RE = re.compile(r"\b(?:\d{1,2}:)?\d{1,2}:\d{2}\b")
+_EXACT_DURATION_RE = re.compile(r"^(?:\d{1,2}:)?\d{1,2}:\d{2}$")
 _DURATION_WORD_RE = re.compile(r"\b\d+\s*(?:second|seconds|minute|minutes)\b", re.I)
+_AM_PM_RE = re.compile(r"\b(?:am|pm)\b", re.I)
 
 
 def _js_click(driver: webdriver.Chrome, element) -> None:
@@ -359,9 +367,9 @@ class GoogleVoiceBrowser:
                     continue
         return bool(found), found
 
-    def _connected_timer_present(self) -> bool:
+    def _connected_timer_evidence(self) -> Optional[str]:
         """
-        Return True only for timer-like connected-call evidence.
+        Return timer-like connected-call evidence, if present.
         The hangup button appears while Google Voice is still ringing, so it is
         not enough to treat the call as answered.
         """
@@ -383,10 +391,85 @@ class GoogleVoiceBrowser:
                     if _DURATION_RE.search(text) or (
                         "duration" in text.lower() and _DURATION_WORD_RE.search(text)
                     ):
-                        return True
+                        return f"{sel} -> {text.strip() or '<duration element>'}"
                 except WebDriverException:
                     continue
-        return False
+
+        # Google Voice changes internal selectors often. As a fallback, look for
+        # a visible exact MM:SS/H:MM:SS text near an active call surface. This
+        # still requires a call-active control, so a hangup button alone never
+        # becomes CONNECTED.
+        if self._any_present("call_active"):
+            for text in self._visible_call_timer_texts():
+                return f"visible duration text '{text}'"
+        return None
+
+    def _connected_timer_present(self) -> bool:
+        return self._connected_timer_evidence() is not None
+
+    def _visible_call_timer_texts(self) -> list[str]:
+        if not self.driver:
+            return []
+        try:
+            texts = self.driver.execute_script(
+                """
+                const visible = (el) => {
+                  const s = window.getComputedStyle(el);
+                  const r = el.getBoundingClientRect();
+                  return s && s.visibility !== 'hidden' && s.display !== 'none' &&
+                    r.width > 0 && r.height > 0 && r.bottom >= 0 && r.right >= 0 &&
+                    r.top <= window.innerHeight && r.left <= window.innerWidth;
+                };
+                const hangups = Array.from(document.querySelectorAll('button,[role="button"],gv-icon-button'))
+                  .filter(visible)
+                  .filter((el) => {
+                    const text = [
+                      el.getAttribute('aria-label') || '',
+                      el.getAttribute('title') || '',
+                      el.getAttribute('icon-name') || '',
+                      el.textContent || '',
+                    ].join(' ').toLowerCase();
+                    return text.includes('hang') || text.includes('end call') ||
+                      text.includes('call_end') || text.includes('end-call');
+                  })
+                  .map((el) => el.getBoundingClientRect());
+                if (!hangups.length) return [];
+                const nearHangup = (rect) => hangups.some((h) => {
+                  const cx = rect.left + rect.width / 2;
+                  const cy = rect.top + rect.height / 2;
+                  const hx = h.left + h.width / 2;
+                  const hy = h.top + h.height / 2;
+                  return Math.abs(cx - hx) <= 520 && Math.abs(cy - hy) <= 360;
+                });
+                const candidates = [];
+                for (const el of Array.from(document.querySelectorAll('body *'))) {
+                  if (!visible(el)) continue;
+                  if (['SCRIPT', 'STYLE', 'BUTTON', 'A', 'INPUT', 'TEXTAREA'].includes(el.tagName)) continue;
+                  const ownText = Array.from(el.childNodes)
+                    .filter((n) => n.nodeType === Node.TEXT_NODE)
+                    .map((n) => n.textContent || '')
+                    .join(' ')
+                    .replace(/\\s+/g, ' ')
+                    .trim();
+                  const text = ownText || ((el.children.length === 0 ? el.textContent : '') || '').replace(/\\s+/g, ' ').trim();
+                  if (!text || text.length > 12) continue;
+                  if (!/^(?:\\d{1,2}:)?\\d{1,2}:\\d{2}$/.test(text)) continue;
+                  if (!nearHangup(el.getBoundingClientRect())) continue;
+                  candidates.push(text);
+                }
+                return Array.from(new Set(candidates));
+                """
+            )
+        except WebDriverException:
+            return []
+        if not isinstance(texts, list):
+            return []
+        cleaned: list[str] = []
+        for item in texts:
+            text = str(item or "").strip()
+            if _EXACT_DURATION_RE.match(text) and not _AM_PM_RE.search(text):
+                cleaned.append(text)
+        return cleaned
 
     def _voicemail_cue_present(self) -> bool:
         """
@@ -526,10 +609,13 @@ class GoogleVoiceBrowser:
 
         while time.time() < deadline:
             # --- CONNECTED: call timer appeared (MM:SS duration counter) ---
-            if self._connected_timer_present():
+            timer_present = self._connected_timer_present()
+            if timer_present:
+                timer_evidence = self._connected_timer_evidence() or "call timer visible"
                 if session.state == CallState.RINGING:
+                    logger.info("Answered-call timer detected: %s", timer_evidence)
                     logger.info("CONNECTED: call timer (MM:SS) visible")
-                    session.transition(CallState.CONNECTED, "call timer visible")
+                    session.transition(CallState.CONNECTED, f"call timer visible: {timer_evidence}")
                 return CallState.CONNECTED
 
             # --- CONNECTED: answered-call controls appeared ---
@@ -634,6 +720,86 @@ class GoogleVoiceBrowser:
             return False
 
     # ------------------------------------------------------------------
+    # Microphone device check
+    # ------------------------------------------------------------------
+
+    def check_microphone_device(self, device_name_hint: str = "CABLE Output") -> "tuple[bool, list[str]]":
+        """
+        Enumerate audio input devices visible to Chrome via JS mediaDevices.enumerateDevices().
+        Returns (hint_found, [device_labels]).
+
+        Device labels are only populated when mic permission is granted for the page.
+        We grant it at launch via opts.prefs media_stream_mic=1, so labels should appear
+        once voice.google.com is loaded.
+        """
+        if not self.driver:
+            return False, []
+        try:
+            devices = self.driver.execute_async_script(
+                """
+                var done = arguments[0];
+                if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+                    done([]);
+                    return;
+                }
+                navigator.mediaDevices.enumerateDevices()
+                    .then(function(devs) {
+                        done(devs
+                            .filter(function(d) { return d.kind === 'audioinput'; })
+                            .map(function(d) {
+                                return d.label || ('id:' + (d.deviceId || '').slice(0, 8));
+                            })
+                        );
+                    })
+                    .catch(function() { done([]); });
+                """
+            )
+        except WebDriverException as exc:
+            logger.debug("check_microphone_device: JS enumerate failed: %s", exc)
+            return False, []
+
+        if not isinstance(devices, list):
+            devices = []
+
+        hint_lower = device_name_hint.lower()
+        found = any(hint_lower in (label or "").lower() for label in devices)
+        return found, [str(d) for d in devices]
+
+    def warn_if_mic_not_set(self, device_name_hint: str = "CABLE Output") -> None:
+        """
+        Log an actionable warning if device_name_hint is not visible as a Chrome audio input.
+
+        Tony's TTS plays to CABLE Input (output device). VB-CABLE routes it to
+        CABLE Output (input/recording device). Chrome must be configured to use
+        CABLE Output as its microphone for voice.google.com — otherwise the call
+        hears the laptop mic, not Tony.
+        """
+        found, devices = self.check_microphone_device(device_name_hint)
+        if found:
+            match = next((d for d in devices if device_name_hint.lower() in d.lower()), device_name_hint)
+            logger.info("Microphone OK: '%s' is available in Chrome as audio input", match)
+            return
+
+        logger.warning(
+            "MICROPHONE NOT SET: '%s' not detected as a Chrome audio input.\n"
+            "Tony's TTS audio will NOT reach the Google Voice call.\n"
+            "\nFix (takes ~30 seconds):\n"
+            "  1. In Chrome, click the lock icon to the left of https://voice.google.com\n"
+            "  2. Click Microphone → select '%s'\n"
+            "  3. Reload the Google Voice tab (F5)\n"
+            "\nIf '%s' is not in the list, install VB-CABLE: https://vb-audio.com/Cable/",
+            device_name_hint, device_name_hint, device_name_hint,
+        )
+        if devices:
+            logger.info("Audio inputs Chrome can currently see: %s", ", ".join(devices))
+        else:
+            logger.info(
+                "No labeled audio inputs returned by Chrome. "
+                "Possible causes: VB-CABLE not installed, mic permission not yet granted "
+                "for voice.google.com, or page not fully loaded."
+            )
+
+    # ------------------------------------------------------------------
     # Diagnostic snapshot (used by --diagnose-call-state CLI mode)
     # ------------------------------------------------------------------
 
@@ -730,12 +896,9 @@ class GoogleVoiceBrowser:
         return self._is_call_active()
 
     def wait_for_call_connect(self, timeout: int = 30) -> bool:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if self._is_call_active():
-                return True
-            time.sleep(1)
-        return False
+        session = CallSession(phone="", contact_name="legacy wait")
+        session.transition(CallState.DIALING, "legacy wait_for_call_connect")
+        return self.detect_call_state(session, poll_interval=1.0, timeout=float(timeout)) == CallState.CONNECTED
 
     def wait_for_call_end(self, timeout: int = 300) -> bool:
         deadline = time.time() + timeout

@@ -82,6 +82,18 @@
   {% endif %}
 </div>
 
+<div class="panel" style="max-width:760px;margin-top:1.5rem">
+  <div class="panel-header"><h3 class="panel-title">Audio Route Tests</h3></div>
+  <div class="panel-body">
+    <div class="quick-actions">
+      <button class="btn btn-primary" id="ttsTestBtn" onclick="playLoopbackTest()">Play test TTS to LOOPBACK_DEVICE</button>
+      <button class="btn btn-secondary" id="captureTestBtn" onclick="recordCaptureTest()">Record 5 seconds from CAPTURE_DEVICE</button>
+    </div>
+    <div id="audioTestStatus" class="audio-test-status">Idle</div>
+    <pre id="audioTestResult" class="audio-test-result"></pre>
+  </div>
+</div>
+
 <div class="panel" style="max-width:640px;margin-top:1.5rem">
   <div class="panel-header"><h3 class="panel-title">Quick-Set Device Names</h3></div>
   <p class="panel-desc">Type partial names below to update loopback and capture device settings.</p>
@@ -127,6 +139,58 @@ async function saveAudioSettings() {
     setTimeout(() => statusEl.textContent = '', 3000);
   } catch(e) {
     statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+function currentAudioSettings() {
+  return {
+    loopback_device: document.getElementById('loopbackInput').value.trim(),
+    capture_device: document.getElementById('captureInput').value.trim(),
+  };
+}
+
+function setAudioTestState(message, data) {
+  document.getElementById('audioTestStatus').textContent = message;
+  const resultEl = document.getElementById('audioTestResult');
+  resultEl.textContent = data ? JSON.stringify(data, null, 2) : '';
+}
+
+async function playLoopbackTest() {
+  const btn = document.getElementById('ttsTestBtn');
+  btn.disabled = true;
+  setAudioTestState('Playing test TTS...', null);
+  try {
+    const resp = await fetch('/api/audio/test-tts', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(currentAudioSettings()),
+    });
+    const data = await resp.json();
+    setAudioTestState(resp.ok && data.ok ? 'TTS playback finished' : 'TTS playback failed', data);
+  } catch(e) {
+    setAudioTestState('TTS playback failed', {error: e.message});
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function recordCaptureTest() {
+  const btn = document.getElementById('captureTestBtn');
+  btn.disabled = true;
+  setAudioTestState('Recording 5 seconds...', null);
+  try {
+    const resp = await fetch('/api/audio/test-capture', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(currentAudioSettings()),
+    });
+    const data = await resp.json();
+    const text = data.stt_text ? ('STT result: ' + data.stt_text) : 'STT result: empty';
+    setAudioTestState(resp.ok && data.ok ? text : 'Capture test failed', data);
+  } catch(e) {
+    setAudioTestState('Capture test failed', {error: e.message});
+  } finally {
+    btn.disabled = false;
   }
 }
 </script>

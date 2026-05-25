@@ -67,6 +67,39 @@ def test_respond_to_updates_history(mock_groq):
     assert agent._history[1]["role"] == "assistant"
 
 
+def test_respond_to_updates_dispatcher_state(mock_groq):
+    _, mock_client = mock_groq
+    mock_client.chat.completions.create.return_value = _make_completion("Good to know.")
+    from src.conversation_agent import ConversationAgent
+    agent = ConversationAgent(api_key="test_key")
+    agent.respond_to("I run a 53ft flatbed with tarps, mostly Texas outbound.")
+    snap = agent.state_snapshot()
+    assert snap["truck_type"] == "Flatbed"
+    assert "53ft" in snap["dimensions"]
+    assert "tarps" in snap["accessories"]
+    assert "Texas" in snap["preferred_lanes"]
+
+
+def test_pricing_response_uses_equipment_rules_without_llm(mock_groq):
+    _, mock_client = mock_groq
+    mock_client.chat.completions.create.return_value = _make_completion("unused")
+    from src.conversation_agent import ConversationAgent
+    agent = ConversationAgent(api_key="test_key")
+    agent.respond_to("I have a sprinter van.")
+    reply = agent.respond_to("What do you charge?")
+    assert "15%" in reply
+    assert "What percentage were you hoping for?" in reply
+
+
+def test_interruption_recovery_does_not_call_llm(mock_groq):
+    _, mock_client = mock_groq
+    mock_client.chat.completions.create.return_value = _make_completion("unused")
+    from src.conversation_agent import ConversationAgent
+    agent = ConversationAgent(api_key="test_key")
+    reply = agent.respond_to("wait, you cut me off")
+    assert reply == "You are right, go ahead. What were you saying?"
+
+
 def test_should_end_call_false_initially(mock_groq):
     _, mock_client = mock_groq
     mock_client.chat.completions.create.return_value = _make_completion("ok")
@@ -102,9 +135,46 @@ def test_should_end_call_after_max_turns(mock_groq):
     mock_client.chat.completions.create.return_value = _make_completion("ok")
     from src.conversation_agent import ConversationAgent
     agent = ConversationAgent(api_key="test_key")
-    for _ in range(19):
+    for _ in range(41):
         agent.respond_to("Tell me more")
     assert agent.should_end_call()
+
+
+def test_long_conversation_retains_state_in_prompt(mock_groq):
+    _, mock_client = mock_groq
+    mock_client.chat.completions.create.return_value = _make_completion("What lanes do you prefer?")
+    from src.conversation_agent import ConversationAgent
+    agent = ConversationAgent(api_key="test_key")
+    agent.respond_to("I run a dry van, own authority, Midwest to Texas.")
+    for i in range(25):
+        agent.respond_to(f"Turn {i}, tell me more.")
+    last_messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
+    system_prompt = last_messages[0]["content"]
+    assert "Dry Van" in system_prompt
+    assert "Midwest" in system_prompt
+
+
+def test_mock_carrier_conversation_simulation(mock_groq):
+    _, mock_client = mock_groq
+    mock_client.chat.completions.create.return_value = _make_completion("Are you running local, regional, or OTR?")
+    from src.conversation_agent import ConversationAgent
+    agent = ConversationAgent(api_key="test_key")
+    transcript = [
+        "I have a 26ft box truck with liftgate.",
+        "I'm new authority, mostly local around Atlanta.",
+        "What do you charge?",
+        "Can you do 8%?",
+        "Send me info at owner@example.com and call back Friday.",
+    ]
+    replies = [agent.respond_to(line) for line in transcript]
+    snap = agent.state_snapshot()
+    assert snap["truck_type"] == "Box Truck"
+    assert "26ft" in snap["dimensions"]
+    assert "liftgate" in snap["accessories"]
+    assert snap["local_or_otr"] == "Local"
+    assert snap["email"] == "owner@example.com"
+    assert "8%" in snap["negotiated_percentage"]
+    assert any("What percentage were you hoping for?" in reply for reply in replies)
 
 
 def test_goodbye_line_returns_string(mock_groq):

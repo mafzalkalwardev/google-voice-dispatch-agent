@@ -1,7 +1,8 @@
 # Google Voice Dispatch Agent — INDUS TRANSPORTS LLC
 
 Realtime Google Voice browser automation for freight dispatch outreach.
-Includes a full operator console web frontend.
+Includes a full operator console web frontend with Leads CRM, call logging,
+and Groq-powered transcript extraction.
 
 ---
 
@@ -57,101 +58,55 @@ uvicorn src.web_app:app --reload --port 8000
 | `/audio` | Detected audio devices, loopback quick-set |
 | `/run` | Start / stop live runs, dry runs, live log stream |
 | `/logs` | Searchable call log viewer |
+| `/leads` | Carrier leads CRM — search, filter, export, add/edit |
 
 ---
 
-## Windows EXE / Installer Build
+## Leads Page
 
-Build a portable Windows EXE:
+The `/leads` page is a lightweight CRM for carrier leads extracted from call transcripts.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1
-```
+### How leads are created
 
-Build output:
+After each connected realtime call, the agent reads the saved transcript and calls
+Groq with a JSON extraction prompt to pull out structured lead data:
 
-- `dist\IndusDispatchConsole.exe`
-- `release\IndusDispatchConsole-portable.zip`
+- Company Name, Contact Name, MC Number, Email
+- Truck Type, Truck Length, Preferred Lanes
+- Agreed Dispatcher Percentage
+- Interested level (`Yes` / `Maybe` / `No` / `DNC`)
+- Callback Time, Remarks, Call Outcome
 
-If port 8000 is busy, launch the EXE with a different console port:
+The result is appended to `logs/leads.csv`. If the same phone number already has
+a row, the new data is merged in (existing non-empty fields are preserved).
 
-```powershell
-.\dist\IndusDispatchConsole.exe --port 8787
-```
+### Manual leads
 
-Optional installer build, if Inno Setup is installed:
+Use the **+ Add Lead** button on `/leads` to enter a lead manually.
+Click **Edit** on any row to update fields. All changes call `POST /api/leads`.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1 -BuildInstaller
-```
+### API endpoints
 
-Installed/runtime data is stored outside the app binary:
+| Method | URL | Description |
+|--------|-----|-------------|
+| `GET` | `/api/leads` | Return all leads as JSON (newest first) |
+| `POST` | `/api/leads` | Upsert a lead (match by phone_number) |
+| `GET` | `/api/leads/export` | Download `leads.csv` |
 
-```text
-%LOCALAPPDATA%\IndusDispatchAgent
-```
+### Interest badges
 
-That folder is where the installed EXE reads/writes `.env`, `dialer_config.json`, contacts, Chrome profiles, logs, transcripts, and generated audio. These files are not bundled into the EXE and are not committed to Git.
+| Badge | Meaning |
+|-------|---------|
+| Yes (green) | Carrier expressed genuine interest |
+| Maybe (amber) | Interested but needs follow-up |
+| No (red) | Not interested at this time |
+| DNC (dark) | Do Not Call |
 
-For local development, when `dist\IndusDispatchConsole.exe` is launched from this repository, it will use the repository folder if `.env` is present. A portable EXE folder can also keep `.env`, `dialer_config.json`, and `chrome_profiles\` beside the EXE.
+### Leads CSV columns
 
-Required on each computer:
-
-- Google Chrome
-- Google Voice account login
-- VB-CABLE or equivalent audio routing for live calls
-- A local `.env` with `GROQ_API_KEY` and `CALLBACK_NUMBER`
-
-For source runs, the helper also accepts a custom port:
-
-```powershell
-.\Start-IndusConsole.ps1 -Port 8787
-```
-
----
-
-## CLI
-
-### List audio devices
-
-```powershell
-python -m src.main --list-audio-devices
-```
-
-### Run preflight checks
-
-```powershell
-python -m src.main --preflight
-```
-
-### Dry run (no dialing, generates scripts only)
-
-```powershell
-python -m src.main --contacts data/contacts.xlsx --profile sales1 --limit 3 --dry-run
-```
-
-### One live test call (confirm a safe number first)
-
-```powershell
-python -m src.main --contacts data/contacts.xlsx --profile sales1 --limit 1
-```
-
-### Common options
-
-```powershell
-python -m src.main `
-  --contacts data/contacts.xlsx `
-  --profile sales1 `
-  --loopback-device "CABLE Input" `
-  --capture-device default `
-  --call-timeout 45 `
-  --call-max-duration 120 `
-  --callback-number "+15551234567" `
-  --limit 1
-```
-
-Realtime conversation is the default. Use `--static-playback` only for the older pregenerated WAV flow.
-The app now waits for answered-call timer evidence before the realtime opening line; the hangup button alone is treated as ringing, not connected.
+`timestamp`, `company_name`, `contact_name`, `phone_number`, `mc_number`,
+`email`, `truck_type`, `truck_length`, `preferred_lanes`, `agreed_percentage`,
+`interested`, `callback_time`, `remarks`, `call_outcome`, `transcript_file`
 
 ---
 
@@ -159,29 +114,50 @@ The app now waits for answered-call timer evidence before the realtime opening l
 
 Install **VB-CABLE** from https://vb-audio.com/Cable/.
 
+### VB-CABLE setup (step by step)
+
+1. Download and install **VB-CABLE Driver** from https://vb-audio.com/Cable/index.htm
+2. Restart Windows after installation.
+3. Open **Sound settings → Playback** — you should see **CABLE Input** (the virtual speaker).
+4. Open **Sound settings → Recording** — you should see **CABLE Output** (the virtual microphone).
+5. In Google Chrome settings (`chrome://settings/content/microphone`), set the microphone to **CABLE Output**.
+6. In the Indus Dispatch Console → **Settings**, set:
+   - **Loopback Device**: `CABLE Input`
+   - **Capture Device**: `default` (system speakers, for single-cable) or `CABLE B Output` (dual-cable)
+
 ### Single-cable setup (default)
 
 | Signal path | Device |
 |---|---|
-| TTS → Chrome mic | `CABLE Input` (output device) → `CABLE Output` set as Chrome microphone |
-| Prospect → STT | System speakers loopback captured via `CAPTURE_DEVICE=default` |
+| Agent TTS → Chrome mic | `CABLE Input` (output) → `CABLE Output` (Chrome mic source) |
+| Prospect voice → STT | System speakers captured via `CAPTURE_DEVICE=default` |
 
-Set in `.env`:
+`.env` settings:
 ```
 LOOPBACK_DEVICE=CABLE Input
 CAPTURE_DEVICE=default
 ```
 
-If preflight reports `Device unavailable`, select a different matching `CABLE Input` index/name from the Audio page or disable Windows exclusive-mode access for that playback device.
+### Dual-cable setup (echo-free, recommended for production)
 
-### Dual-cable setup (recommended for echo-free capture)
+Install a second VB-CABLE pair. Route Chrome speaker output to **CABLE B Input**.
+Capture from **CABLE B Output** so prospect audio is isolated from TTS echo:
 
-Use a second VB-CABLE pair (CABLE B). Route Chrome speaker output to CABLE B Input.
-Capture from CABLE B Output instead of the system default:
 ```
 LOOPBACK_DEVICE=CABLE Input
 CAPTURE_DEVICE=CABLE B Output
 ```
+
+### Audio troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Tony's voice not heard by prospect | Chrome mic is not set to CABLE Output | Chrome → Settings → Privacy → Microphone → select **CABLE Output** |
+| Preflight reports `Device unavailable` | Windows exclusive-mode lock on CABLE Input | Right-click CABLE Input in Sound → Properties → Advanced → uncheck *Allow exclusive mode* |
+| STT always empty / VAD not triggering | Capture device muted or wrong index | Audio page → check capture device index; run `--audio-route-test` |
+| Echo / Tony hears himself | Single-cable setup picking up TTS playback | Use dual-cable setup (CABLE B for capture) |
+| Call connected but no audio injected | loopback_device name mismatch | Audio page → find exact device name; update `LOOPBACK_DEVICE` in Settings |
+| `validate_tts_output_device` error | Device index stale after USB reconnect | Re-run preflight or restart the app |
 
 ---
 
@@ -200,6 +176,82 @@ CAPTURE_DEVICE=default
 
 ---
 
+## CLI
+
+### List audio devices
+
+```powershell
+python -m src.main --list-audio-devices
+```
+
+### Run preflight checks
+
+```powershell
+python -m src.main --preflight
+```
+
+### Audio route test (no call placed)
+
+```powershell
+python -m src.main --audio-route-test
+```
+
+### Dry run (no dialing, generates scripts only)
+
+```powershell
+python -m src.main --contacts data/contacts.xlsx --profile sales1 --limit 3 --dry-run
+```
+
+### Safe one-number test
+
+```powershell
+python -m src.main --safe-test +15551234567
+```
+
+### Full run
+
+```powershell
+python -m src.main `
+  --contacts data/contacts.xlsx `
+  --profile sales1 `
+  --loopback-device "CABLE Input" `
+  --capture-device default `
+  --call-timeout 45 `
+  --call-max-duration 120 `
+  --callback-number "+15551234567" `
+  --limit 10
+```
+
+Realtime conversation is the default. Use `--static-playback` only for the older
+pregenerated WAV flow.
+
+---
+
+## Windows EXE / Installer Build
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1
+```
+
+Build output:
+
+- `dist\IndusDispatchConsole.exe`
+- `release\IndusDispatchConsole-portable.zip`
+
+Optional installer build (requires Inno Setup):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1 -BuildInstaller
+```
+
+Runtime data is stored outside the binary:
+
+```text
+%LOCALAPPDATA%\IndusDispatchAgent
+```
+
+---
+
 ## Tests
 
 ```powershell
@@ -208,24 +260,22 @@ python -m pytest tests/ -v
 
 ---
 
-## Records, Replies, and Outcomes
+## Records and Logs
 
-The app saves operational records locally under `logs/`, which is ignored by Git.
+All operational records are stored under `logs/` (git-ignored):
 
-- Call outcome CSV: `logs/call_logs.csv`
-- Customer/agent transcript text: `logs/transcripts/<phone>_<timestamp>.txt`
-- App runtime logs: `logs/`
-
-A call is treated as picked up only after Google Voice exposes answered-call timer evidence. The hangup button alone is treated as ringing, not connected, so Tony should not speak while the outbound call is still ringing.
-
-Customer interest and details are currently captured in the transcript file and call log notes. For production sales work, the next improvement should add a structured lead summary file, for example `logs/leads.csv`, with fields like interest level, equipment type, lanes, callback time, objections, and follow-up action.
+| File | Description |
+|------|-------------|
+| `logs/call_logs.csv` | Per-call outcome log |
+| `logs/leads.csv` | Structured carrier leads CRM |
+| `logs/transcripts/<phone>_<ts>.txt` | Full conversation transcripts |
 
 ---
 
 ## Safety & Compliance
 
 - Keep `.env`, `dialer_config.json`, contacts, audio, logs, and Chrome profiles out of Git.
-- Test with your own phone first using `--limit 1`.
+- Test with your own phone first using `--safe-test +1XXXXXXXXXX`.
 - Follow TCPA, FDCPA, DNC registry rules, state call-recording laws, Google Voice Terms of Service,
   and all applicable regulations before dialing third parties.
 - The web console shows a compliance acknowledgement before enabling live dialing.

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import io
 import json
 import logging
 import os
@@ -18,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -36,6 +38,7 @@ BASE_DIR = ensure_runtime_dirs()
 TEMPLATES_DIR = resource_path("src", "templates")
 STATIC_DIR = resource_path("src", "static")
 CALL_LOG_FILE = BASE_DIR / "logs" / "call_logs.csv"
+LEADS_FILE = BASE_DIR / "logs" / "leads.csv"
 CONFIG_FILE = BASE_DIR / "dialer_config.json"
 DATA_DIR = BASE_DIR / "data"
 
@@ -405,6 +408,13 @@ async def logs_page(request: Request):
     return templates.TemplateResponse(request, "logs.html", {"logs": logs})
 
 
+@app.get("/leads", response_class=HTMLResponse)
+async def leads_page(request: Request):
+    from src.leads import read_leads  # type: ignore
+    leads = read_leads(LEADS_FILE)
+    return templates.TemplateResponse(request, "leads.html", {"leads": leads})
+
+
 # ---------------------------------------------------------------------------
 # API routes
 # ---------------------------------------------------------------------------
@@ -418,6 +428,7 @@ async def api_preflight():
         contacts_file=Path(cfg.get("contacts_file", "")),
         profile_name=cfg.get("profile_name"),
         loopback_device=cfg.get("loopback_device"),
+        capture_device=cfg.get("capture_device"),
     )
     return [{"name": r.name, "status": r.status, "message": r.message} for r in results]
 
@@ -472,6 +483,40 @@ async def api_audio_devices():
         return list_audio_devices()
     except Exception as exc:
         return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+@app.post("/api/audio/test-tts")
+async def api_audio_test_tts(request: Request):
+    body = await request.json()
+    cfg = _load_config()
+    loopback = body.get("loopback_device") or cfg.get("loopback_device", "CABLE Input")
+    try:
+        from src.audio_diagnostics import play_test_tts  # type: ignore
+        return play_test_tts(output_hint=loopback)
+    except Exception as exc:
+        logger.exception("Audio TTS test failed")
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
+
+
+@app.post("/api/audio/test-capture")
+async def api_audio_test_capture(request: Request):
+    body = await request.json()
+    cfg = _load_config()
+    capture = body.get("capture_device") or cfg.get("capture_device", "default")
+    try:
+        from src.audio_diagnostics import record_capture_sample  # type: ignore
+        from src.config import Config  # type: ignore
+
+        runtime_cfg = Config.load()
+        return record_capture_sample(
+            capture_hint=capture,
+            duration_s=5.0,
+            stt_api_key=runtime_cfg.groq_api_key,
+            stt_model=str(cfg.get("stt_model") or runtime_cfg.stt_model),
+        )
+    except Exception as exc:
+        logger.exception("Audio capture test failed")
+        return JSONResponse(status_code=500, content={"ok": False, "error": str(exc)})
 
 
 @app.post("/api/run/start")
@@ -598,6 +643,47 @@ async def api_run_stream(request: Request, since: int = 0):
 @app.get("/api/logs")
 async def api_logs(limit: int = 200):
     return _read_call_logs(limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# Leads API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/leads")
+async def api_get_leads():
+    from src.leads import read_leads  # type: ignore
+    return read_leads(LEADS_FILE)
+
+
+@app.post("/api/leads")
+async def api_upsert_lead(request: Request):
+    from src.leads import upsert_lead, LEADS_HEADERS  # type: ignore
+    body = await request.json()
+    lead = {h: str(body.get(h, "")).strip() for h in LEADS_HEADERS}
+    if not lead["timestamp"]:
+        lead["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    upsert_lead(lead, LEADS_FILE)
+    return {"ok": True}
+
+
+@app.get("/api/leads/export")
+async def api_export_leads():
+    from src.leads import read_leads, LEADS_HEADERS  # type: ignore
+    rows = list(reversed(read_leads(LEADS_FILE)))  # chronological for export
+
+    def _generate():
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=LEADS_HEADERS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+        yield buf.getvalue()
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=leads.csv"},
+    )
 
 
 # ---------------------------------------------------------------------------
