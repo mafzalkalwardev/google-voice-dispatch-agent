@@ -132,12 +132,18 @@ class ConversationAgent:
     # ------------------------------------------------------------------ #
 
     def opening_line(self) -> str:
-        """Generate the agent's first spoken line for this call."""
-        name_q = f" Is this {self.contact_name}?" if self.contact_name else ""
+        """Generate Tony's first spoken greeting — warm and human, not a pitch."""
         prompt = (
-            f"Generate one warm, brief opening line for a cold call. "
-            f"Introduce yourself as {self.agent_name} calling about freight dispatch.{name_q} "
-            "Under 20 words total."
+            f"Write one warm, natural phone greeting for an outbound freight dispatch call. "
+            f"You are {self.agent_name} from {self.company_name}. "
+            "Style: casual, conversational, friendly — like a real person calling, not a robot. "
+            "The greeting must: (1) say hello warmly, (2) state your name and company, "
+            "(3) include a human opener like 'how are you doing today' or 'hope your day is going well'. "
+            "Examples: "
+            "'Hey, how's it going? This is Tony with Indus Transports.' "
+            "'Hi there — Tony here from Indus Transports, how are you doing today?' "
+            "'Hello? Hey, this is Tony calling from Indus Transports — how are you doing?' "
+            "Under 20 words. Return ONLY the greeting text, no quotes."
         )
         return self._raw_complete(prompt, max_tokens=60)
 

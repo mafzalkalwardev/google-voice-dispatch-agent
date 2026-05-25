@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% set active_page = "connected_calls" %}
+
+{% block title %}Connected Calls - INDUS TRANSPORTS LLC{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-header-left">
+    <h2 class="page-title">Connected Calls</h2>
+    <p class="page-sub">Answered carrier conversations linked to transcripts, recordings, AI summaries, and CRM profiles.</p>
+  </div>
+  <div class="quick-actions">
+    <a href="/api/connected-calls/export" class="btn btn-secondary btn-sm">Export CSV</a>
+    <button class="btn btn-secondary btn-sm" onclick="location.reload()">Refresh</button>
+  </div>
+</div>
+
+<div class="card-grid" style="grid-template-columns:repeat(5,1fr);margin-bottom:1.25rem">
+  <div class="stat-card stat-card--slate"><div class="stat-body"><div class="stat-label">Connected</div><div class="stat-value">{{ stats.total }}</div></div></div>
+  <div class="stat-card stat-card--green"><div class="stat-body"><div class="stat-label">Interested</div><div class="stat-value">{{ stats.interested }}</div></div></div>
+  <div class="stat-card stat-card--amber"><div class="stat-body"><div class="stat-label">Maybe</div><div class="stat-value">{{ stats.maybe }}</div></div></div>
+  <div class="stat-card stat-card--red"><div class="stat-body"><div class="stat-label">Not Interested</div><div class="stat-value">{{ stats.no }}</div></div></div>
+  <div class="stat-card stat-card--blue"><div class="stat-body"><div class="stat-label">Avg Duration</div><div class="stat-value stat-value--status">{{ stats.avg_duration }}</div></div></div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <h3 class="panel-title">Answered Conversations</h3>
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+      <input id="connectedSearch" class="log-filter-input" type="text" placeholder="Search company, phone, MC, email..." oninput="filterConnectedCalls()" />
+      <select id="truckFilter" class="leads-filter-select" onchange="filterConnectedCalls()">
+        <option value="">All Equipment</option>
+        {% for truck in truck_types %}
+        <option value="{{ truck }}">{{ truck }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  {% if calls %}
+  <div class="table-wrap">
+    <table class="data-table" id="connectedCallsTable">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Carrier</th>
+          <th>Phone</th>
+          <th>MC/DOT</th>
+          <th>Truck</th>
+          <th>Lanes</th>
+          <th>Percent</th>
+          <th>Status</th>
+          <th>Callback</th>
+          <th>Duration</th>
+          <th>Artifacts</th>
+          <th>Summary</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for call in calls %}
+        <tr data-truck="{{ call.truck_type }}" data-search="{{ (call.company_name ~ ' ' ~ call.carrier_name ~ ' ' ~ call.name ~ ' ' ~ call.phone ~ ' ' ~ call.mc_number ~ ' ' ~ call.dot_number ~ ' ' ~ call.email ~ ' ' ~ call.preferred_lanes ~ ' ' ~ call.ai_summary) | lower }}">
+          <td class="td-mono td-nowrap">{{ call.timestamp }}</td>
+          <td>
+            <strong>{{ call.company_name or call.carrier_name or call.name or '-' }}</strong><br>
+            <span class="text-muted">{{ call.email or '-' }}</span>
+          </td>
+          <td class="td-mono">{{ call.phone or '-' }}</td>
+          <td class="td-mono">{{ call.mc_number or '-' }}{% if call.dot_number %}<br>DOT {{ call.dot_number }}{% endif %}</td>
+          <td>{{ call.truck_type or '-' }}{% if call.truck_length %}<br><span class="text-muted">{{ call.truck_length }}</span>{% endif %}</td>
+          <td>{{ call.preferred_lanes or '-' }}</td>
+          <td>{{ call.agreed_percentage or '-' }}</td>
+          <td><span class="badge badge--blue">{{ call.follow_up_status or call.interested_status or call.interested or 'Open' }}</span></td>
+          <td class="td-nowrap">{{ call.callback_time or '-' }}</td>
+          <td>{{ call.connected_duration or '-' }}</td>
+          <td>
+            {% if call.transcript_filename %}<a class="link-muted" href="/api/transcript/{{ call.transcript_filename }}">Transcript</a>{% endif %}
+            {% if call.recording_path %}<a class="link-muted" href="/api/recordings/{{ call.id }}">Recording</a>{% endif %}
+          </td>
+          <td class="td-notes">{{ call.ai_summary or call.post_call_summary or '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <span class="empty-state-icon">&#9742;</span>
+    No connected conversations yet. Calls appear here only after a real answered exchange is captured.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterConnectedCalls() {
+  const query = (document.getElementById('connectedSearch').value || '').toLowerCase();
+  const truck = document.getElementById('truckFilter').value;
+  document.querySelectorAll('#connectedCallsTable tbody tr').forEach(row => {
+    const search = row.getAttribute('data-search') || '';
+    const rowTruck = row.getAttribute('data-truck') || '';
+    row.style.display = (!query || search.includes(query)) && (!truck || rowTruck === truck) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}

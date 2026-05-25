@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% set active_page = "carrier_crm" %}
+
+{% block title %}Carrier CRM - INDUS TRANSPORTS LLC{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-header-left">
+    <h2 class="page-title">Carrier CRM</h2>
+    <p class="page-sub">Merged carrier profiles indexed by phone, MC number, and email.</p>
+  </div>
+  <div class="quick-actions">
+    <a href="/api/carrier-crm/export" class="btn btn-secondary btn-sm">Export CSV</a>
+    <button class="btn btn-secondary btn-sm" onclick="location.reload()">Refresh</button>
+  </div>
+</div>
+
+{% if error %}
+<div class="alert alert-error" style="margin-bottom:1rem">{{ error }}</div>
+{% endif %}
+
+<div class="card-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:1.25rem">
+  <div class="stat-card stat-card--slate"><div class="stat-body"><div class="stat-label">Profiles</div><div class="stat-value">{{ stats.total }}</div></div></div>
+  <div class="stat-card stat-card--green"><div class="stat-body"><div class="stat-label">Interested</div><div class="stat-value">{{ stats.interested }}</div></div></div>
+  <div class="stat-card stat-card--amber"><div class="stat-body"><div class="stat-label">Callbacks</div><div class="stat-value">{{ stats.callbacks }}</div></div></div>
+  <div class="stat-card stat-card--dark"><div class="stat-body"><div class="stat-label">DNC</div><div class="stat-value">{{ stats.dnc }}</div></div></div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <h3 class="panel-title">Carrier Profiles</h3>
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+      <input id="crmSearch" class="log-filter-input" type="text" placeholder="Search company, carrier, phone, MC, email..." oninput="filterCrm()" />
+      <select id="crmTruckFilter" class="leads-filter-select" onchange="filterCrm()">
+        <option value="">All Equipment</option>
+        {% for truck in truck_types %}
+        <option value="{{ truck }}">{{ truck }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  {% if profiles %}
+  <div class="table-wrap">
+    <table class="data-table" id="crmTable">
+      <thead>
+        <tr>
+          <th>Carrier</th>
+          <th>Phone</th>
+          <th>MC/DOT</th>
+          <th>Email</th>
+          <th>Equipment</th>
+          <th>Lanes</th>
+          <th>Percent</th>
+          <th>Pipeline</th>
+          <th>Calls</th>
+          <th>Callback</th>
+          <th>Summary</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for profile in profiles %}
+        <tr data-truck="{{ profile.truck_type }}" data-search="{{ (profile.company_name ~ ' ' ~ profile.carrier_name ~ ' ' ~ profile.name ~ ' ' ~ profile.phone ~ ' ' ~ profile.mc_number ~ ' ' ~ profile.dot_number ~ ' ' ~ profile.email ~ ' ' ~ profile.preferred_lanes ~ ' ' ~ profile.post_call_summary) | lower }}">
+          <td>
+            <a href="/carrier-crm/{{ profile.id or profile.phone }}"><strong>{{ profile.company_name or profile.carrier_name or profile.name or '-' }}</strong></a><br>
+            <span class="text-muted">{{ profile.carrier_name or profile.name or '-' }}</span>
+          </td>
+          <td class="td-mono">{{ profile.phone or '-' }}</td>
+          <td class="td-mono">{{ profile.mc_number or '-' }}{% if profile.dot_number %}<br>DOT {{ profile.dot_number }}{% endif %}</td>
+          <td>{{ profile.email or '-' }}</td>
+          <td>{{ profile.truck_type or '-' }}{% if profile.truck_length %}<br><span class="text-muted">{{ profile.truck_length }}</span>{% endif %}</td>
+          <td>{{ profile.preferred_lanes or '-' }}</td>
+          <td>{{ profile.agreed_percentage or '-' }}</td>
+          <td><span class="badge badge--blue">{{ profile.follow_up_status or profile.interested_status or profile.interested or 'Open' }}</span></td>
+          <td>{{ profile.connected_count or 0 }} / {{ profile.call_count or 0 }}</td>
+          <td class="td-nowrap">{{ profile.callback_time or '-' }}</td>
+          <td class="td-notes">{{ profile.post_call_summary or profile.last_summary or '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <span class="empty-state-icon">&#128188;</span>
+    No carrier profiles yet. Connected conversations and extracted leads create CRM profiles automatically.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterCrm() {
+  const query = (document.getElementById('crmSearch').value || '').toLowerCase();
+  const truck = document.getElementById('crmTruckFilter').value;
+  document.querySelectorAll('#crmTable tbody tr').forEach(row => {
+    const search = row.getAttribute('data-search') || '';
+    const rowTruck = row.getAttribute('data-truck') || '';
+    row.style.display = (!query || search.includes(query)) && (!truck || rowTruck === truck) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}

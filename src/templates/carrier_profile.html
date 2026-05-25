@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% set active_page = "carrier_crm" %}
+
+{% block title %}Carrier Profile - INDUS TRANSPORTS LLC{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-header-left">
+    <h2 class="page-title">{{ profile.company_name or profile.carrier_name or profile.name or 'Carrier Profile' }}</h2>
+    <p class="page-sub">{{ profile.phone or '-' }}{% if profile.mc_number %} | MC {{ profile.mc_number }}{% endif %}{% if profile.email %} | {{ profile.email }}{% endif %}</p>
+  </div>
+  <div class="quick-actions">
+    <a href="/api/carrier-crm/{{ profile.id }}/export" class="btn btn-secondary btn-sm">Export Profile</a>
+    <a href="/carrier-crm" class="btn btn-secondary btn-sm">Back to CRM</a>
+  </div>
+</div>
+
+<div class="card-grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:1.25rem">
+  <div class="stat-card stat-card--blue"><div class="stat-body"><div class="stat-label">Pipeline</div><div class="stat-value stat-value--status">{{ profile.follow_up_status or profile.interested_status or 'Open' }}</div></div></div>
+  <div class="stat-card stat-card--green"><div class="stat-body"><div class="stat-label">Close Probability</div><div class="stat-value stat-value--status">{{ profile.close_probability or '-' }}</div></div></div>
+  <div class="stat-card stat-card--amber"><div class="stat-body"><div class="stat-label">Callback</div><div class="stat-value stat-value--status">{{ profile.callback_time or '-' }}</div></div></div>
+  <div class="stat-card stat-card--slate"><div class="stat-body"><div class="stat-label">Calls</div><div class="stat-value">{{ profile.connected_count or 0 }}</div></div></div>
+</div>
+
+<div class="panel">
+  <div class="panel-header"><h3 class="panel-title">Carrier Details</h3></div>
+  <div class="form-grid">
+    <div class="form-group"><label>Company</label><input value="{{ profile.company_name or '' }}" readonly></div>
+    <div class="form-group"><label>Carrier</label><input value="{{ profile.carrier_name or profile.name or '' }}" readonly></div>
+    <div class="form-group"><label>Phone</label><input value="{{ profile.phone or '' }}" readonly></div>
+    <div class="form-group"><label>Email</label><input value="{{ profile.email or '' }}" readonly></div>
+    <div class="form-group"><label>MC Number</label><input value="{{ profile.mc_number or '' }}" readonly></div>
+    <div class="form-group"><label>DOT Number</label><input value="{{ profile.dot_number or '' }}" readonly></div>
+    <div class="form-group"><label>Truck Type</label><input value="{{ profile.truck_type or '' }}" readonly></div>
+    <div class="form-group"><label>Dimensions</label><input value="{{ profile.dimensions or profile.truck_length or '' }}" readonly></div>
+    <div class="form-group form-group--wide"><label>Accessories</label><input value="{{ profile.accessories or '' }}" readonly></div>
+    <div class="form-group form-group--wide"><label>Preferred Lanes</label><input value="{{ profile.preferred_lanes or '' }}" readonly></div>
+    <div class="form-group"><label>Local / OTR</label><input value="{{ profile.local_or_otr or '' }}" readonly></div>
+    <div class="form-group"><label>Factoring</label><input value="{{ profile.factoring_company or '' }}" readonly></div>
+    <div class="form-group"><label>Agreed Percent</label><input value="{{ profile.agreed_percentage or '' }}" readonly></div>
+    <div class="form-group"><label>Assigned Dispatcher</label><input value="{{ profile.assigned_dispatcher or '' }}" readonly></div>
+    <div class="form-group form-group--wide"><label>AI Summary</label><textarea readonly>{{ profile.last_summary or profile.post_call_summary or '' }}</textarea></div>
+    <div class="form-group form-group--wide"><label>Best Follow-Up Strategy</label><textarea readonly>{{ profile.best_follow_up_strategy or '' }}</textarea></div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header"><h3 class="panel-title">Actions</h3></div>
+  <div class="form-grid">
+    <div class="form-group form-group--wide">
+      <label>Add Note</label>
+      <textarea id="noteText" placeholder="Add a timestamped CRM note"></textarea>
+      <button class="btn btn-primary btn-sm" type="button" onclick="addNote()">Save Note</button>
+    </div>
+    <div class="form-group">
+      <label>Follow-Up Status</label>
+      <select id="followStatus">
+        <option>Hot Lead</option>
+        <option>Interested</option>
+        <option>Negotiating</option>
+        <option>Waiting For Documents</option>
+        <option>Follow Up Today</option>
+        <option>Not Interested</option>
+        <option>DNC</option>
+        <option>Onboarded</option>
+        <option>Active Carrier</option>
+      </select>
+    </div>
+    <div class="form-group"><label>Callback Time</label><input id="callbackTime" value="{{ profile.callback_time or '' }}"></div>
+    <div class="form-group"><label>Dispatcher</label><input id="dispatcherName" value="{{ profile.assigned_dispatcher or '' }}"></div>
+    <div class="form-group form-group--wide">
+      <label>Follow-Up Notes</label>
+      <textarea id="followNotes"></textarea>
+      <button class="btn btn-secondary btn-sm" type="button" onclick="scheduleFollowUp()">Schedule Follow-Up</button>
+      <button class="btn btn-secondary btn-sm" type="button" onclick="assignDispatcher()">Assign Dispatcher</button>
+      <span id="actionMsg" class="form-actions-hint"></span>
+    </div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header"><h3 class="panel-title">Timeline</h3></div>
+  {% if profile.timeline %}
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Time</th><th>Type</th><th>Details</th><th>Artifacts</th></tr></thead>
+      <tbody>
+        {% for item in profile.timeline %}
+        <tr>
+          <td class="td-mono td-nowrap">{{ item.timestamp }}</td>
+          <td><span class="badge badge--slate">{{ item.type }}</span></td>
+          <td class="td-notes">
+            {{ item.ai_summary or item.text or item.notes or item.outcome or item.status or item.reason or '-' }}
+          </td>
+          <td>
+            {% if item.transcript_filename %}<a class="link-muted" href="/api/transcript/{{ item.transcript_filename }}">Transcript</a>{% endif %}
+            {% if item.recording_path and item.id %}<a class="link-muted" href="/api/recordings/{{ item.id }}">Recording</a>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">No profile history yet.</div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const carrierId = {{ profile.id | tojson }};
+async function postJson(url, body) {
+  const res = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || 'Request failed');
+  return data;
+}
+async function addNote() {
+  const msg = document.getElementById('actionMsg');
+  try {
+    await postJson(`/api/carrier-crm/${carrierId}/notes`, {text: document.getElementById('noteText').value});
+    location.reload();
+  } catch (err) { msg.textContent = err.message; }
+}
+async function scheduleFollowUp() {
+  const msg = document.getElementById('actionMsg');
+  try {
+    await postJson(`/api/carrier-crm/${carrierId}/follow-up`, {
+      status: document.getElementById('followStatus').value,
+      callback_time: document.getElementById('callbackTime').value,
+      notes: document.getElementById('followNotes').value,
+      assigned_dispatcher: document.getElementById('dispatcherName').value
+    });
+    location.reload();
+  } catch (err) { msg.textContent = err.message; }
+}
+async function assignDispatcher() {
+  const msg = document.getElementById('actionMsg');
+  try {
+    await postJson(`/api/carrier-crm/${carrierId}/assign-dispatcher`, {
+      dispatcher: document.getElementById('dispatcherName').value
+    });
+    location.reload();
+  } catch (err) { msg.textContent = err.message; }
+}
+</script>
+{% endblock %}

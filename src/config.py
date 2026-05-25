@@ -35,6 +35,11 @@ _DEFAULTS = {
     "tts_voice": "en-US-GuyNeural",
     "stt_model": "whisper-large-v3-turbo",
     "vad_threshold": 0.015,
+    # Answer detection — controls when Tony first speaks after CONNECTED is detected
+    "answered_speak_delay_seconds": 4.0,  # fallback wait before speaking (wait_for_human_audio=false)
+    "wait_for_human_audio": True,         # listen for inbound audio before speaking
+    "human_audio_timeout_seconds": 8.0,   # max seconds to listen before speaking anyway
+    "answer_confirm_polls": 2,            # consecutive DOM polls required to confirm CONNECTED
 }
 
 
@@ -103,6 +108,18 @@ class Config:
         )
         self.vad_threshold: float = float(
             os.getenv("VAD_THRESHOLD", j.get("vad_threshold", _DEFAULTS["vad_threshold"]))
+        )
+        self.answered_speak_delay_seconds: float = float(
+            os.getenv("ANSWERED_SPEAK_DELAY_SECONDS", j.get("answered_speak_delay_seconds", _DEFAULTS["answered_speak_delay_seconds"]))
+        )
+        self.wait_for_human_audio: bool = os.getenv(
+            "WAIT_FOR_HUMAN_AUDIO", str(j.get("wait_for_human_audio", _DEFAULTS["wait_for_human_audio"]))
+        ).lower() not in ("false", "0", "no")
+        self.human_audio_timeout_seconds: float = float(
+            os.getenv("HUMAN_AUDIO_TIMEOUT_SECONDS", j.get("human_audio_timeout_seconds", _DEFAULTS["human_audio_timeout_seconds"]))
+        )
+        self.answer_confirm_polls: int = int(
+            os.getenv("ANSWER_CONFIRM_POLLS", j.get("answer_confirm_polls", _DEFAULTS["answer_confirm_polls"]))
         )
 
     def validate(self) -> None:

@@ -73,6 +73,42 @@ def test_logs_page_loads(client):
     assert "Call Logs" in r.text
 
 
+def test_connected_calls_page_loads(client):
+    with patch("src.crm.get_connected_calls", return_value=[]), \
+         patch("src.crm.connected_calls_stats", return_value={
+             "total": 0, "interested": 0, "maybe": 0, "no": 0, "dnc": 0, "avg_duration": "-",
+         }):
+        r = client.get("/connected-calls")
+    assert r.status_code == 200
+    assert "Connected Calls" in r.text
+
+
+def test_carrier_crm_page_loads(client):
+    with patch("src.crm.get_carrier_profiles", return_value=[]), \
+         patch("src.crm.carrier_stats", return_value={
+             "total": 0, "interested": 0, "callbacks": 0, "dnc": 0,
+         }):
+        r = client.get("/carrier-crm")
+    assert r.status_code == 200
+    assert "Carrier CRM" in r.text
+
+
+def test_carrier_profile_page_loads(client):
+    profile = {
+        "id": "carrier1",
+        "company_name": "Road Star Logistics",
+        "carrier_name": "Sam Carrier",
+        "phone": "+15551234567",
+        "timeline": [],
+        "calls": [],
+        "connected_count": 0,
+    }
+    with patch("src.crm.get_carrier_profile", return_value=profile):
+        r = client.get("/carrier-crm/carrier1")
+    assert r.status_code == 200
+    assert "Road Star Logistics" in r.text
+
+
 # ── Branding present ──────────────────────────────────────────────────────────
 
 def test_branding_in_all_pages(client):
@@ -273,3 +309,65 @@ def test_api_logs_with_data(client, tmp_path):
     data = r.json()
     assert len(data) == 1
     assert data[0]["name"] == "Alice"
+
+
+def test_connected_calls_api_routes(client):
+    call = {"id": "call1", "company_name": "Road Star Logistics"}
+    with patch("src.crm.get_connected_calls", return_value=[call]):
+        r = client.get("/api/connected-calls")
+    assert r.status_code == 200
+    assert r.json()[0]["id"] == "call1"
+
+    with patch("src.crm.search_connected_calls", return_value=[call]):
+        r = client.get("/api/connected-calls/search?q=Road")
+    assert r.status_code == 200
+    assert r.json()[0]["company_name"] == "Road Star Logistics"
+
+    with patch("src.crm.get_connected_call", return_value=call):
+        r = client.get("/api/connected-calls/call1")
+    assert r.status_code == 200
+    assert r.json()["id"] == "call1"
+
+    with patch("src.crm.get_connected_calls", return_value=[call]), \
+         patch("src.crm.export_connected_calls_csv", return_value="id,company_name\ncall1,Road Star Logistics\n"):
+        r = client.get("/api/connected-calls/export")
+    assert r.status_code == 200
+    assert "Road Star Logistics" in r.text
+
+
+def test_carrier_crm_api_routes(client):
+    profile = {"id": "carrier1", "company_name": "Road Star Logistics"}
+    with patch("src.crm.get_carrier_profiles", return_value=[profile]):
+        r = client.get("/api/carrier-crm")
+    assert r.status_code == 200
+    assert r.json()[0]["id"] == "carrier1"
+
+    with patch("src.crm.search_carrier_crm", return_value=[profile]):
+        r = client.get("/api/carrier-crm/search?q=Road")
+    assert r.status_code == 200
+    assert r.json()[0]["company_name"] == "Road Star Logistics"
+
+    with patch("src.crm.get_carrier_profile", return_value=profile):
+        r = client.get("/api/carrier-crm/carrier1")
+    assert r.status_code == 200
+    assert r.json()["id"] == "carrier1"
+
+    with patch("src.crm.edit_carrier", return_value=profile):
+        r = client.patch("/api/carrier-crm/carrier1", json={"follow_up_status": "Hot Lead"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+    with patch("src.crm.add_carrier_note", return_value={"id": "note1", "text": "Call back"}):
+        r = client.post("/api/carrier-crm/carrier1/notes", json={"text": "Call back"})
+    assert r.status_code == 200
+    assert r.json()["note"]["id"] == "note1"
+
+    with patch("src.crm.schedule_follow_up", return_value={"id": "fu1", "status": "Hot Lead"}):
+        r = client.post("/api/carrier-crm/carrier1/follow-up", json={"status": "Hot Lead"})
+    assert r.status_code == 200
+    assert r.json()["follow_up"]["status"] == "Hot Lead"
+
+    with patch("src.crm.assign_dispatcher", return_value=profile):
+        r = client.post("/api/carrier-crm/carrier1/assign-dispatcher", json={"dispatcher": "Tony"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True

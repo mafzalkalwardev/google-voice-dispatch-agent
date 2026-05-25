@@ -35,6 +35,8 @@ def _make_loop(
         tts=mock_tts,
         agent=mock_agent,
         stt=mock_stt,
+        wait_for_human_audio=False,
+        answered_speak_delay=0.0,
     )
     return loop, mock_tts, mock_agent, mock_stt
 

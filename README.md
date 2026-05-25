@@ -227,6 +227,99 @@ pregenerated WAV flow.
 
 ---
 
+## Connected Calls + Carrier CRM Backend
+
+The CRM backend is SQLite-backed and keeps legacy CSV compatibility. A call is
+promoted to **Connected Calls** only when Google Voice has connected evidence and
+the transcript contains a real prospect/carrier turn. Voicemail, failed, and
+silent connected calls are archived separately and excluded from connected-call
+views.
+
+Runtime storage:
+
+| Path | Purpose |
+|------|---------|
+| `logs/carrier_crm.sqlite3` | Permanent relational CRM database |
+| `connected_calls/<call_id>/` | Real connected conversations with transcript, recording, metadata, summary |
+| `voicemail_calls/<call_id>/` | Voicemail call metadata/artifacts |
+| `failed_calls/<call_id>/` | Failed and silent connected call metadata/artifacts |
+| `logs/leads.csv` | Backward-compatible lead export, updated after connected calls |
+
+Core relationships:
+
+```text
+carriers
+  -> connected_calls
+  -> call_artifacts
+  -> notes
+  -> follow_ups
+```
+
+Carrier duplicate merging uses normalized `phone`, `mc_number`, or `email`.
+Search indexing covers company, carrier, phone, MC/DOT, email, transcripts,
+summaries, notes, and follow-up records.
+
+Main APIs:
+
+| API | Description |
+|-----|-------------|
+| `GET /api/connected-calls` | List real answered conversations |
+| `GET /api/connected-calls/{id}` | Connected call detail |
+| `GET /api/connected-calls/search?q=` | Search connected calls |
+| `GET /api/connected-calls/export` | Export connected calls CSV |
+| `GET /api/carrier-crm` | List carrier profiles |
+| `GET /api/carrier-crm/{id}` | Carrier profile with history |
+| `GET /api/carrier-crm/search?q=` | Global carrier CRM search |
+| `PATCH /api/carrier-crm/{id}` | Edit carrier/lead fields |
+| `POST /api/carrier-crm/{id}/notes` | Add note |
+| `POST /api/carrier-crm/{id}/follow-up` | Schedule follow-up |
+| `POST /api/carrier-crm/{id}/assign-dispatcher` | Assign dispatcher |
+| `GET /api/carrier-crm/{id}/export` | Export one profile as JSON |
+| `GET /api/carrier-crm/export` | Export CRM CSV |
+| `GET /api/recordings/{call_id}` | Download connected-call recording |
+
+Sample connected-call transcript:
+
+```text
+[12:00:00] Tony: What truck are you running right now?
+[12:00:05] Prospect: I run a 53 foot dry van, mostly Midwest to Texas.
+[12:00:18] Tony: Got it. Are you booking loads yourself or using a dispatcher?
+[12:00:24] Prospect: Booking myself, but deadhead has been killing us.
+```
+
+Sample CRM summary:
+
+```json
+{
+  "sentiment": "positive",
+  "close_probability": "75%",
+  "urgency": "medium",
+  "pain_points": "deadhead and inconsistent Midwest reloads",
+  "best_follow_up_strategy": "Lead with Midwest-to-Texas lane planning and 6% dry van dispatch terms"
+}
+```
+
+Sample carrier record:
+
+```json
+{
+  "company_name": "Road Star Logistics",
+  "carrier_name": "Sam Carrier",
+  "phone": "+15551234567",
+  "mc_number": "MC-123456",
+  "dot_number": "DOT-987654",
+  "email": "sam@roadstar.example",
+  "truck_type": "Dry Van",
+  "truck_length": "53ft",
+  "preferred_lanes": "Midwest to Texas",
+  "agreed_percentage": "6%",
+  "follow_up_status": "Interested",
+  "callback_time": "Thursday 2pm"
+}
+```
+
+---
+
 ## Windows EXE / Installer Build
 
 ```powershell
@@ -269,6 +362,7 @@ All operational records are stored under `logs/` (git-ignored):
 | `logs/call_logs.csv` | Per-call outcome log |
 | `logs/leads.csv` | Structured carrier leads CRM |
 | `logs/transcripts/<phone>_<ts>.txt` | Full conversation transcripts |
+| `logs/recordings/<phone>_<ts>.wav` | Temporary incoming-call recordings before CRM archival |
 
 ---
 

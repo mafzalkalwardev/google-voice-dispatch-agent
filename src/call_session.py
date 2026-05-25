@@ -43,6 +43,7 @@ class CallSession:
     outcome: str = ""
     notes: list[str] = field(default_factory=list)
     transcript_path: Optional[Path] = None
+    recording_path: Optional[Path] = None
 
     def transition(self, new_state: CallState, note: str = "") -> None:
         allowed = _ALLOWED.get(self.state, set())
@@ -93,4 +94,6 @@ class CallSession:
             "connected_duration_s": self.connected_duration_seconds(),
             "total_duration_s": self.total_duration_seconds(),
             "notes": "; ".join(self.notes),
+            "transcript_path": str(self.transcript_path) if self.transcript_path else "",
+            "recording_path": str(self.recording_path) if self.recording_path else "",
         }

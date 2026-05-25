@@ -12,6 +12,10 @@ __pycache__/
 .cursor/
 .sixth/
 logs/
+connected_calls/
+voicemail_calls/
+failed_calls/
+*.sqlite3
 chrome_profiles/
 *.log
 dist/

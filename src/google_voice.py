@@ -591,11 +591,15 @@ class GoogleVoiceBrowser:
         session: CallSession,
         poll_interval: float = 0.75,
         timeout: float = 90.0,
+        ctrl_confirm_polls: int = 2,
     ) -> CallState:
         """
         Poll the DOM until a definitive state is reached or timeout expires.
         Drives session.transition() at each state change.
         Returns the final CallState.
+
+        ctrl_confirm_polls: consecutive polls that must show answered controls
+        before CONNECTED is declared (debounce against ringing false-positives).
         """
         if not self.driver:
             if not session.is_terminal():
@@ -606,6 +610,7 @@ class GoogleVoiceBrowser:
             session.transition(CallState.RINGING, "dial confirmed, polling for state")
 
         deadline = time.time() + timeout
+        ctrl_consecutive = 0
 
         while time.time() < deadline:
             # --- CONNECTED: call timer appeared (MM:SS duration counter) ---
@@ -618,16 +623,35 @@ class GoogleVoiceBrowser:
                     session.transition(CallState.CONNECTED, f"call timer visible: {timer_evidence}")
                 return CallState.CONNECTED
 
-            # --- CONNECTED: answered-call controls appeared ---
+            # --- CONNECTED: answered-call controls appeared (with debounce) ---
             # Hold call / Mute / Transfer / Add a call / Record are only present
             # after the remote party answers — NOT while ringing.
+            # Require ctrl_confirm_polls consecutive polls to rule out transient
+            # ringing-state false positives.
             ctrl_present, ctrl_labels = self._answered_controls_present()
             if ctrl_present:
-                if session.state == CallState.RINGING:
-                    reason = "answered controls visible: " + ", ".join(ctrl_labels[:4])
-                    logger.info("CONNECTED: %s", reason)
-                    session.transition(CallState.CONNECTED, reason)
-                return CallState.CONNECTED
+                ctrl_consecutive += 1
+                if ctrl_consecutive >= ctrl_confirm_polls:
+                    if session.state == CallState.RINGING:
+                        reason = (
+                            f"answered controls stable ({ctrl_consecutive}× polls): "
+                            + ", ".join(ctrl_labels[:4])
+                        )
+                        logger.info("CONNECTED: %s", reason)
+                        session.transition(CallState.CONNECTED, reason)
+                    return CallState.CONNECTED
+                else:
+                    logger.debug(
+                        "Answered controls seen (%d/%d polls) — confirming...",
+                        ctrl_consecutive, ctrl_confirm_polls,
+                    )
+            else:
+                if ctrl_consecutive > 0:
+                    logger.debug(
+                        "Answered controls disappeared after %d poll(s) — resetting",
+                        ctrl_consecutive,
+                    )
+                ctrl_consecutive = 0
 
             # Log ringing state clearly so logs show why we're still waiting
             if session.state == CallState.RINGING:

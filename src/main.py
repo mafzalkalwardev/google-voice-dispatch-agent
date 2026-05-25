@@ -153,6 +153,10 @@ def _run_call(
     stt_model: str = "whisper-large-v3-turbo",
     vad_threshold: float = 0.015,
     groq_api_key: str = "",
+    answered_speak_delay: float = 4.0,
+    wait_for_human_audio: bool = True,
+    human_audio_timeout: float = 8.0,
+    answer_confirm_polls: int = 2,
 ) -> None:
     phone = contact["phone"]
     name = contact["name"]
@@ -223,13 +227,18 @@ def _run_call(
         session.transition(CallState.FAILED, "dial_number returned False")
         session.outcome = "DIAL_FAILED"
         call_logger.log_session(session)
+        _archive_call_result(session, contact, {}, logger, index)
         logger.warning("[%d] Dial failed for %s", index, phone)
         return
 
     # ---- Poll for ANSWERED or VOICEMAIL ----
     # Google Voice shows a hangup button while an outbound call is only ringing,
     # so this wait must use real answer evidence and the shorter answer timeout.
-    final_state = browser.detect_call_state(session, timeout=float(call_timeout))
+    final_state = browser.detect_call_state(
+        session,
+        timeout=float(call_timeout),
+        ctrl_confirm_polls=answer_confirm_polls,
+    )
 
     if final_state == CallState.CONNECTED:
         if realtime and loopback_device_index is not None:
@@ -253,6 +262,9 @@ def _run_call(
                 browser=browser,
                 call_max_duration=call_max_duration,
                 logger=logger,
+                answered_speak_delay=answered_speak_delay,
+                wait_for_human_audio=wait_for_human_audio,
+                human_audio_timeout=human_audio_timeout,
             )
         else:
             logger.info("[%d] Call connected — playing script audio", index)
@@ -264,9 +276,12 @@ def _run_call(
                     browser.hangup_call()
                 session.outcome = session.state.value
                 call_logger.log_session(session)
+                _archive_call_result(session, contact, {}, logger, index)
                 return
             # Wait for natural end (up to 60s after audio finishes)
-            followup_state = browser.detect_call_state(session, timeout=60.0)
+            followup_state = browser.detect_call_state(
+                session, timeout=60.0, ctrl_confirm_polls=answer_confirm_polls,
+            )
             if followup_state == CallState.VOICEMAIL:
                 logger.info("[%d] Voicemail detected after initial connection", index)
                 browser.wait_for_voicemail_beep(timeout=30.0)
@@ -314,6 +329,8 @@ def _run_call(
             logger=logger,
             index=index,
         )
+    else:
+        _archive_call_result(session, contact, {}, logger, index)
 
 
 def _extract_and_upsert_lead(
@@ -324,28 +341,69 @@ def _extract_and_upsert_lead(
     logger: logging.Logger,
     index: int,
 ) -> None:
-    """Extract structured lead data after a realtime call transcript is saved."""
-    if not session.transcript_path or not groq_api_key:
-        return
+    """Extract structured lead data and archive the call into the CRM store."""
+    lead: dict = {}
     try:
-        from src.leads import extract_lead_from_transcript, upsert_lead  # type: ignore
+        if session.transcript_path and groq_api_key:
+            from src.leads import extract_lead_from_transcript, upsert_lead  # type: ignore
 
-        lead = extract_lead_from_transcript(
-            transcript_path=session.transcript_path,
+            lead = extract_lead_from_transcript(
+                transcript_path=session.transcript_path,
+                contact=contact,
+                groq_api_key=groq_api_key,
+                model=model,
+            )
+            lead["phone_number"] = session.phone
+            lead["contact_name"] = lead.get("contact_name") or session.contact_name
+            lead["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            lead["transcript_file"] = str(session.transcript_path)
+            if not lead.get("call_outcome"):
+                lead["call_outcome"] = session.outcome or session.state.value
+            upsert_lead(lead)
+            logger.info("[%d] Lead upserted for %s", index, session.phone)
+    except Exception as exc:
+        logger.warning("[%d] Lead extraction error: %s", index, exc)
+    _archive_call_result(
+        session=session,
+        contact=contact,
+        lead=lead,
+        logger=logger,
+        index=index,
+        groq_api_key=groq_api_key,
+        model=model,
+    )
+
+
+def _archive_call_result(
+    session: CallSession,
+    contact: dict,
+    lead: dict,
+    logger: logging.Logger,
+    index: int,
+    groq_api_key: str = "",
+    model: str = "llama-3.3-70b-versatile",
+) -> None:
+    """Persist call artifacts in connected/voicemail/failed storage and CRM tables."""
+    try:
+        from src.crm import finalize_call_session  # type: ignore
+
+        result = finalize_call_session(
+            session=session,
             contact=contact,
+            lead=lead,
             groq_api_key=groq_api_key,
             model=model,
         )
-        lead["phone_number"] = session.phone
-        lead["contact_name"] = lead.get("contact_name") or session.contact_name
-        lead["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        lead["transcript_file"] = str(session.transcript_path)
-        if not lead.get("call_outcome"):
-            lead["call_outcome"] = session.outcome or session.state.value
-        upsert_lead(lead)
-        logger.info("[%d] Lead upserted for %s", index, session.phone)
+        logger.info(
+            "[%d] CRM archive: type=%s stored=%s call_id=%s carrier_id=%s",
+            index,
+            result.get("call_type", ""),
+            result.get("stored", False),
+            result.get("call_id", ""),
+            result.get("carrier_id", ""),
+        )
     except Exception as exc:
-        logger.warning("[%d] Lead extraction error: %s", index, exc)
+        logger.warning("[%d] CRM archive error: %s", index, exc)
 
 
 def _fallback_opening_line(agent_name: str, company_name: str) -> str:
@@ -412,6 +470,9 @@ def _run_realtime_loop(
     browser: GoogleVoiceBrowser,
     call_max_duration: int,
     logger: logging.Logger,
+    answered_speak_delay: float = 4.0,
+    wait_for_human_audio: bool = True,
+    human_audio_timeout: float = 8.0,
 ) -> None:
     from src.conversation_agent import ConversationAgent
     from src.conversation_loop import ConversationLoop
@@ -425,7 +486,9 @@ def _run_realtime_loop(
     transcript_ts = time.strftime("%Y%m%d_%H%M%S")
     safe_phone = session.phone.replace("+", "").replace(" ", "")
     transcript_path = BASE_DIR / "logs" / "transcripts" / f"{safe_phone}_{transcript_ts}.txt"
+    recording_path = BASE_DIR / "logs" / "recordings" / f"{safe_phone}_{transcript_ts}.wav"
     session.transcript_path = transcript_path
+    session.recording_path = recording_path
 
     try:
         validate_tts_output_device(loopback_device_index)
@@ -451,8 +514,13 @@ def _run_realtime_loop(
             stt=stt,
             vad_config=vad_cfg,
             transcript_path=transcript_path,
+            recording_path=recording_path,
+            answered_speak_delay=answered_speak_delay,
+            wait_for_human_audio=wait_for_human_audio,
+            human_audio_timeout=human_audio_timeout,
         )
         logger.info("Transcript will be saved to: %s", transcript_path)
+        logger.info("Recording will be saved to: %s", recording_path)
     except Exception as exc:
         logger.error("Realtime setup error: %s", exc)
         if browser.is_call_active():
@@ -469,8 +537,8 @@ def _run_realtime_loop(
     )
     monitor.start()
     try:
-        logger.info("Answered call confirmed; waiting briefly before opening line.")
-        time.sleep(1.5)
+        # Brief pause to let call UI stabilize; answer detection runs inside loop.run()
+        time.sleep(0.5)
         loop.run(session=session, opening_line=opening_line, auto_opening=True)
     except Exception as exc:
         logger.error("Realtime loop error: %s", exc)
@@ -798,6 +866,10 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
             stt_model=cfg.stt_model,
             vad_threshold=cfg.vad_threshold,
             groq_api_key=cfg.groq_api_key,
+            answered_speak_delay=cfg.answered_speak_delay_seconds,
+            wait_for_human_audio=cfg.wait_for_human_audio,
+            human_audio_timeout=cfg.human_audio_timeout_seconds,
+            answer_confirm_polls=cfg.answer_confirm_polls,
         )
     finally:
         browser.close()
@@ -896,6 +968,10 @@ def main() -> None:
                 stt_model=cfg.stt_model,
                 vad_threshold=cfg.vad_threshold,
                 groq_api_key=cfg.groq_api_key,
+                answered_speak_delay=cfg.answered_speak_delay_seconds,
+                wait_for_human_audio=cfg.wait_for_human_audio,
+                human_audio_timeout=cfg.human_audio_timeout_seconds,
+                answer_confirm_polls=cfg.answer_confirm_polls,
             )
         logger.info("Dry run complete. Audio files in %s/", output_dir)
         return
@@ -936,6 +1012,10 @@ def main() -> None:
                     stt_model=cfg.stt_model,
                     vad_threshold=cfg.vad_threshold,
                     groq_api_key=cfg.groq_api_key,
+                    answered_speak_delay=cfg.answered_speak_delay_seconds,
+                    wait_for_human_audio=cfg.wait_for_human_audio,
+                    human_audio_timeout=cfg.human_audio_timeout_seconds,
+                    answer_confirm_polls=cfg.answer_confirm_polls,
                 )
             except WebDriverException as exc:
                 logger.error("Chrome/Google Voice session ended; stopping call loop: %s", exc)

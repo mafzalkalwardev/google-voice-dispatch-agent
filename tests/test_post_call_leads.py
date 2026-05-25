@@ -25,7 +25,13 @@ def test_extract_and_upsert_lead_after_realtime_call(tmp_path: Path) -> None:
         "call_outcome": "",
     }
     with patch("src.leads.extract_lead_from_transcript", return_value=extracted) as mock_extract, \
-         patch("src.leads.upsert_lead") as mock_upsert:
+         patch("src.leads.upsert_lead") as mock_upsert, \
+         patch("src.crm.finalize_call_session", return_value={
+             "call_type": "connected",
+             "stored": True,
+             "call_id": "call1",
+             "carrier_id": "carrier1",
+         }) as mock_finalize:
         _extract_and_upsert_lead(
             session=session,
             contact={"name": "Test Carrier", "phone": "+15551234567"},
@@ -41,3 +47,5 @@ def test_extract_and_upsert_lead_after_realtime_call(tmp_path: Path) -> None:
     assert lead["contact_name"] == "Test Carrier"
     assert lead["transcript_file"] == str(transcript)
     assert lead["call_outcome"] == "ENDED"
+    mock_finalize.assert_called_once()
+    assert mock_finalize.call_args.kwargs["lead"]["truck_type"] == "Dry Van"

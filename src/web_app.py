@@ -23,8 +23,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
+from urllib.parse import quote as _url_quote
+
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
+    FileResponse,
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
@@ -56,6 +59,10 @@ app = FastAPI(
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+# Custom Jinja2 filters
+templates.env.filters["basename"] = lambda p: Path(str(p or "")).name
+templates.env.filters["url_encode"] = lambda v: _url_quote(str(v or ""), safe="")
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +422,49 @@ async def leads_page(request: Request):
     return templates.TemplateResponse(request, "leads.html", {"leads": leads})
 
 
+@app.get("/connected-calls", response_class=HTMLResponse)
+async def connected_calls_page(request: Request):
+    from src.crm import get_connected_calls, connected_calls_stats  # type: ignore
+    calls = get_connected_calls()
+    stats = connected_calls_stats(calls)
+    # Collect unique truck types for filter dropdown
+    truck_types = sorted({c["truck_type"] for c in calls if c["truck_type"]})
+    return templates.TemplateResponse(request, "connected_calls.html", {
+        "calls": calls,
+        "stats": stats,
+        "truck_types": truck_types,
+    })
+
+
+@app.get("/carrier-crm", response_class=HTMLResponse)
+async def carrier_crm_page(request: Request):
+    from src.crm import get_carrier_profiles, carrier_stats  # type: ignore
+    profiles = get_carrier_profiles()
+    stats = carrier_stats(profiles)
+    truck_types = sorted({p["truck_type"] for p in profiles if p["truck_type"]})
+    return templates.TemplateResponse(request, "carrier_crm.html", {
+        "profiles": profiles,
+        "stats": stats,
+        "truck_types": truck_types,
+    })
+
+
+@app.get("/carrier-crm/{phone}", response_class=HTMLResponse)
+async def carrier_profile_page(request: Request, phone: str):
+    from src.crm import get_carrier_profile  # type: ignore
+    profile = get_carrier_profile(phone)
+    if not profile:
+        return templates.TemplateResponse(request, "carrier_crm.html", {
+            "profiles": [],
+            "stats": {"total": 0, "interested": 0, "callbacks": 0, "dnc": 0},
+            "truck_types": [],
+            "error": f"No carrier found for {phone}",
+        })
+    return templates.TemplateResponse(request, "carrier_profile.html", {
+        "profile": profile,
+    })
+
+
 # ---------------------------------------------------------------------------
 # API routes
 # ---------------------------------------------------------------------------
@@ -684,6 +734,200 @@ async def api_export_leads():
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=leads.csv"},
     )
+
+
+# ---------------------------------------------------------------------------
+# CRM API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/connected-calls")
+async def api_connected_calls():
+    from src.crm import get_connected_calls  # type: ignore
+    return get_connected_calls()
+
+
+@app.get("/api/connected-calls/search")
+async def api_connected_calls_search(q: str = ""):
+    from src.crm import search_connected_calls  # type: ignore
+    return search_connected_calls(q)
+
+
+@app.get("/api/connected-calls/export")
+async def api_connected_calls_export(q: str = ""):
+    from src.crm import export_connected_calls_csv, search_connected_calls, get_connected_calls  # type: ignore
+    rows = search_connected_calls(q) if q else get_connected_calls()
+    csv_text = export_connected_calls_csv(rows)
+    return StreamingResponse(
+        iter([csv_text]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=connected_calls.csv"},
+    )
+
+
+@app.get("/api/connected-calls/{call_id}")
+async def api_connected_call_detail(call_id: str):
+    from src.crm import get_connected_call  # type: ignore
+    call = get_connected_call(call_id)
+    if not call:
+        raise HTTPException(status_code=404, detail="Connected call not found")
+    return call
+
+
+@app.get("/api/carriers")
+async def api_carriers():
+    from src.crm import get_carrier_profiles  # type: ignore
+    return get_carrier_profiles()
+
+
+@app.get("/api/carrier-crm")
+async def api_carrier_crm():
+    from src.crm import get_carrier_profiles  # type: ignore
+    return get_carrier_profiles()
+
+
+@app.get("/api/carrier-crm/search")
+async def api_carrier_crm_search(q: str = ""):
+    from src.crm import search_carrier_crm  # type: ignore
+    return search_carrier_crm(q)
+
+
+@app.get("/api/carrier-crm/export")
+async def api_carrier_crm_export(q: str = ""):
+    from src.crm import export_carriers_csv, search_carrier_crm, get_carrier_profiles  # type: ignore
+    rows = search_carrier_crm(q) if q else get_carrier_profiles()
+    csv_text = export_carriers_csv(rows)
+    return StreamingResponse(
+        iter([csv_text]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=carrier_crm.csv"},
+    )
+
+
+@app.get("/api/carrier-crm/{carrier_id}/export")
+async def api_carrier_profile_export(carrier_id: str):
+    from src.crm import export_profile  # type: ignore
+    profile = export_profile(carrier_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Carrier not found")
+    payload = json.dumps(profile, indent=2, ensure_ascii=False)
+    return StreamingResponse(
+        iter([payload]),
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename=carrier_{carrier_id}.json"},
+    )
+
+
+@app.get("/api/carrier-crm/{carrier_id}")
+async def api_carrier_crm_profile(carrier_id: str):
+    from src.crm import get_carrier_profile  # type: ignore
+    profile = get_carrier_profile(carrier_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Carrier not found")
+    return profile
+
+
+@app.patch("/api/carrier-crm/{carrier_id}")
+async def api_edit_carrier_crm_profile(carrier_id: str, request: Request):
+    from src.crm import edit_carrier  # type: ignore
+    body = await request.json()
+    profile = edit_carrier(carrier_id, body)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Carrier not found")
+    return {"ok": True, "profile": profile}
+
+
+@app.post("/api/carrier-crm/{carrier_id}/notes")
+async def api_add_carrier_crm_note(carrier_id: str, request: Request):
+    from src.crm import add_carrier_note  # type: ignore
+    body = await request.json()
+    text = str(body.get("text", "")).strip()
+    author = str(body.get("author", "")).strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Note text is required")
+    try:
+        note = add_carrier_note(carrier_id, text, author=author)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Carrier not found")
+    return {"ok": True, "note": note}
+
+
+@app.post("/api/carrier-crm/{carrier_id}/follow-up")
+async def api_schedule_carrier_follow_up(carrier_id: str, request: Request):
+    from src.crm import schedule_follow_up  # type: ignore
+    body = await request.json()
+    try:
+        follow = schedule_follow_up(
+            carrier_id,
+            status=str(body.get("status", "Follow Up Today")).strip(),
+            callback_time=str(body.get("callback_time", "")).strip(),
+            notes=str(body.get("notes", "")).strip(),
+            assigned_dispatcher=str(body.get("assigned_dispatcher", "")).strip(),
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Carrier not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "follow_up": follow}
+
+
+@app.post("/api/carrier-crm/{carrier_id}/assign-dispatcher")
+async def api_assign_carrier_dispatcher(carrier_id: str, request: Request):
+    from src.crm import assign_dispatcher  # type: ignore
+    body = await request.json()
+    dispatcher = str(body.get("dispatcher", "")).strip()
+    if not dispatcher:
+        raise HTTPException(status_code=400, detail="Dispatcher is required")
+    profile = assign_dispatcher(carrier_id, dispatcher)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Carrier not found")
+    return {"ok": True, "profile": profile}
+
+
+@app.get("/api/carrier/{phone}")
+async def api_carrier_profile(phone: str):
+    from src.crm import get_carrier_profile  # type: ignore
+    profile = get_carrier_profile(phone)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Carrier not found")
+    return profile
+
+
+@app.post("/api/carrier/{phone}/note")
+async def api_add_carrier_note(phone: str, request: Request):
+    body = await request.json()
+    text = str(body.get("text", "")).strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Note text is required")
+    from src.crm import add_carrier_note  # type: ignore
+    note = add_carrier_note(phone, text)
+    return {"ok": True, "note": note}
+
+
+@app.get("/api/recordings/{call_id}")
+async def api_download_recording(call_id: str):
+    from src.crm import recording_path_for_call  # type: ignore
+    path = recording_path_for_call(call_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    return FileResponse(
+        path,
+        media_type="audio/wav",
+        filename=path.name,
+    )
+
+
+@app.get("/api/transcript/{filename}")
+async def api_get_transcript(filename: str):
+    from src.crm import get_transcript_text, TRANSCRIPTS_DIR  # type: ignore
+    # Security: only serve .txt files, no path separators allowed
+    safe = Path(filename).name
+    if not safe.endswith(".txt") or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    text = get_transcript_text(safe)
+    if not text:
+        # Return empty rather than 404 so the modal can show a message
+        return {"text": "", "filename": safe}
+    return {"text": text, "filename": safe}
 
 
 # ---------------------------------------------------------------------------

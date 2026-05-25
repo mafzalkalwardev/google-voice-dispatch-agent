@@ -25,6 +25,7 @@ LEADS_HEADERS = [
     "contact_name",
     "phone_number",
     "mc_number",
+    "dot_number",
     "email",
     "truck_type",
     "truck_length",
@@ -58,7 +59,7 @@ _INTERESTED_VALUES = {"Yes", "Maybe", "No", "DNC"}
 _EXTRACT_SYSTEM = (
     "You extract lead information and a post-call summary from a freight dispatch call transcript.\n"
     'Return ONLY a valid JSON object with these exact keys (use "" for unknown):\n'
-    "  company_name, contact_name, mc_number, email, truck_type, truck_length, dimensions,\n"
+    "  company_name, contact_name, mc_number, dot_number, email, truck_type, truck_length, dimensions,\n"
     "  accessories, preferred_lanes, local_or_otr, dispatcher_status, factoring_company,\n"
     "  pricing_discussion, agreed_percentage, objections, interest_level, interested,\n"
     "  callback_time, follow_up_status, follow_up_notes, post_call_sentiment,\n"
@@ -71,6 +72,7 @@ _EXTRACT_SYSTEM = (
     '- urgency: use "high", "medium", "low", or ""\n'
     '- call_outcome: short phrase e.g. "Interested - callback Thursday", "Voicemail", "Not interested"\n'
     '- agreed_percentage: commission % if mentioned (e.g. "8%"), else ""\n'
+    '- dot_number: DOT/USDOT number if mentioned, else ""\n'
     "- Include factoring company, objections, pain points, and follow-up strategy when stated or clearly inferable.\n"
     "- Do NOT invent data. Use \"\" for unknowns.\n"
     "- Return raw JSON only. No markdown, no code fences, no extra text."
