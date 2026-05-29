@@ -8,6 +8,9 @@ Engine priority:
 The best voice for Tony is "en-US-GuyNeural" (edge-tts).
 Fallback SAPI voice: first English male found, else Zira.
 
+TTS cache: common short phrases (greetings, fillers, fallbacks) are pre-generated
+at startup so they play with near-zero latency on first use.
+
 Usage:
     tts = RealtimeTTS(device_index=1, voice="en-US-GuyNeural")
     tts.speak("Hi, this is Tony from Indus Transports.")    # blocks
@@ -44,6 +47,7 @@ class RealtimeTTS:
         device_index: int,
         voice: str = VOICE_GUY,
         use_edge_tts: bool = True,
+        use_cache: bool = True,
     ):
         self.device_index = device_index
         self.voice = voice
@@ -51,13 +55,21 @@ class RealtimeTTS:
         self._lock = threading.Lock()
         self._speaking = threading.Event()
 
+        # TTS cache — pre-warms common phrases so first-word latency is minimal
+        self._cache: Optional["TTSCache"] = None  # type: ignore[name-defined]
+        if use_cache and self._use_edge:
+            from src.tts_cache import TTSCache
+            self._cache = TTSCache(tts_voice=voice)
+            self._cache.warm()
+
         engine = "edge-tts" if self._use_edge else "pyttsx3"
         from src.voice_playback import describe_audio_device
 
         logger.info(
-            "RealtimeTTS: engine=%s voice=%s selected_output_device=%s",
+            "RealtimeTTS: engine=%s voice=%s cache=%s selected_output_device=%s",
             engine,
             voice,
+            "enabled" if self._cache else "disabled",
             describe_audio_device(device_index),
         )
 
@@ -104,6 +116,18 @@ class RealtimeTTS:
     # ------------------------------------------------------------------ #
 
     def _play(self, text: str) -> None:
+        # Try cache first — zero network latency for pre-warmed phrases
+        if self._cache is not None:
+            cached_bytes = self._cache.get(text)
+            if cached_bytes:
+                logger.info("RealtimeTTS: serving '%s' from cache (%d bytes)", text[:40], len(cached_bytes))
+                try:
+                    data, rate = _decode_mp3(cached_bytes)
+                    _play_numpy_to_device(data, rate, self.device_index)
+                    return
+                except Exception as exc:
+                    logger.debug("RealtimeTTS: cache playback failed (%s); falling through to synthesis", exc)
+
         if self._use_edge:
             try:
                 logger.info("RealtimeTTS: generating speech with edge-tts (%d chars)", len(text))

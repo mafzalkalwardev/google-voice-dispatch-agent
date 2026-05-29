@@ -664,7 +664,13 @@ class ConversationLoop:
                 logger.info("[RESPONSE] segment ignored during human takeover")
                 continue
 
-            while self.tts.is_speaking() and not self._stop_event.is_set():
+            # --- Barge-in detection ---
+            # If carrier spoke while Tony was still speaking, stop TTS immediately
+            # so Tony doesn't finish his reply over the carrier's interruption.
+            if self.tts.is_speaking():
+                logger.info("[RESPONSE] Barge-in detected: carrier spoke during TTS; stopping Tony")
+                self.tts.stop()
+                # Brief wait for audio pipeline to settle
                 time.sleep(0.05)
             if self._stop_event.is_set():
                 break
@@ -673,11 +679,17 @@ class ConversationLoop:
             duration = len(audio_segment) / float(_SAMPLERATE)
             self._set_state(STATE_TRANSCRIBING, f"audio_duration={duration:.2f}s")
 
+            # Build a per-call enriched STT prompt including known carrier context
+            dynamic_prompt = (
+                getattr(self.agent, "build_stt_prompt", lambda: self._stt_prompt)()
+                or self._stt_prompt
+            )
+
             try:
                 transcript = self.stt.transcribe(
                     audio_segment,
                     samplerate=_SAMPLERATE,
-                    prompt=self._stt_prompt,
+                    prompt=dynamic_prompt,
                 )
             except Exception as exc:
                 self._last_empty_stt_reason = f"exception: {exc}"
@@ -711,8 +723,6 @@ class ConversationLoop:
             self._write_transcript("Tony", response)
             # Reply path: prefer speak_async so unit tests can assert it.
             self._play_tts_async_like(response, STATE_SPEAKING_REPLY, "reply")
-
-
 
             if self.agent.should_end_call():
                 logger.info("[RESPONSE] Agent requested graceful call end")

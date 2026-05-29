@@ -36,10 +36,17 @@ _DEFAULTS = {
     "stt_model": "whisper-large-v3-turbo",
     "vad_threshold": 0.015,
     # Answer detection — controls when Tony first speaks after CONNECTED is detected
-    "answered_speak_delay_seconds": 4.0,  # fallback wait before speaking (wait_for_human_audio=false)
+    "answered_speak_delay_seconds": 1.5,  # reduced: 4.0s caused early hang-ups; 1.5s is better
     "wait_for_human_audio": True,         # listen for inbound audio before speaking
     "human_audio_timeout_seconds": 8.0,   # max seconds to listen before speaking anyway
     "answer_confirm_polls": 2,            # consecutive DOM polls required to confirm CONNECTED
+    # VAD tuning — operators can adjust from Settings page
+    "vad_silence_frames": 12,             # frames of silence before utterance ends (12×30ms=360ms)
+    "vad_speech_frames": 2,               # frames of speech required to start utterance
+    # STT reliability
+    "stt_retry_count": 2,                 # number of STT retries on empty/failure
+    # TTS pre-warming
+    "tts_warmup": True,                   # pre-generate common phrases at startup
 }
 
 
@@ -121,6 +128,18 @@ class Config:
         self.answer_confirm_polls: int = int(
             os.getenv("ANSWER_CONFIRM_POLLS", j.get("answer_confirm_polls", _DEFAULTS["answer_confirm_polls"]))
         )
+        self.vad_silence_frames: int = int(
+            os.getenv("VAD_SILENCE_FRAMES", j.get("vad_silence_frames", _DEFAULTS["vad_silence_frames"]))
+        )
+        self.vad_speech_frames: int = int(
+            os.getenv("VAD_SPEECH_FRAMES", j.get("vad_speech_frames", _DEFAULTS["vad_speech_frames"]))
+        )
+        self.stt_retry_count: int = int(
+            os.getenv("STT_RETRY_COUNT", j.get("stt_retry_count", _DEFAULTS["stt_retry_count"]))
+        )
+        self.tts_warmup: bool = os.getenv(
+            "TTS_WARMUP", str(j.get("tts_warmup", _DEFAULTS["tts_warmup"]))
+        ).lower() not in ("false", "0", "no")
 
     def validate(self) -> None:
         if not self.groq_api_key or self.groq_api_key.startswith("your_"):

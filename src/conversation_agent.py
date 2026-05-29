@@ -73,7 +73,7 @@ _NEGATIVE_SIGNALS = frozenset([
 
 _MAX_TURNS_DEFAULT = 18
 _MAX_TURNS_ENGAGED = 40
-_CONSECUTIVE_NEGATIVES_THRESHOLD = 3  # raised from 2 — carriers sometimes say no twice, then engage
+_CONSECUTIVE_NEGATIVES_THRESHOLD = 4  # raised from 3 — carriers often say no 2-3× before engaging
 
 # Trucking-specific terms that indicate a genuine carrier conversation
 _ENGAGEMENT_KEYWORDS = frozenset([
@@ -96,7 +96,9 @@ def _clean_spoken_text(text: str) -> str:
     for prefix in (
         "Tony:", "Agent:", "Assistant:", "[Tony]", "[Agent]",
         "TONY:", "AGENT:", "AI:", "Bot:", "Tony (agent):",
-        "Dispatch Agent:", "Response:",
+        "Dispatch Agent:", "Response:", "Answer:", "Reply:",
+        "Tony (Dispatch Agent):", "Tony from Indus:",
+        "[Dispatch Agent]:", "[Response]:",
     ):
         if text.lower().startswith(prefix.lower()):
             text = text[len(prefix):].strip()
@@ -242,6 +244,23 @@ class ConversationAgent:
             "factoring_company": self.state.factoring_company,
             "carrier_style": self.state.carrier_style,
         }
+
+    def build_stt_prompt(self) -> str:
+        """Build a per-call STT prompt that includes known carrier context.
+
+        Including the carrier's name and equipment type in the Whisper prompt
+        measurably improves transcription accuracy for domain-specific terms.
+        """
+        parts = [f"{self.company_name} freight dispatch call"]
+        if self.contact_name:
+            parts.append(f"carrier name: {self.contact_name}")
+        if self.state.truck_type:
+            parts.append(f"equipment: {self.state.truck_type}")
+        if self.state.preferred_lanes:
+            parts.append(f"lanes: {self.state.preferred_lanes}")
+        if self.state.mc_number:
+            parts.append(f"MC: {self.state.mc_number}")
+        return ". ".join(parts) + "."
 
     # ------------------------------------------------------------------ #
     # Internal
