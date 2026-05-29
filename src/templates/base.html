@@ -5,9 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{% block title %}INDUS TRANSPORTS LLC — Dispatch Agent Console{% endblock %}</title>
   <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="/static/dark-light.css" />
   <link rel="icon" href="/static/indus-logo.jpg" />
 </head>
 <body>
+
 
 <!-- ===== SIDEBAR ===== -->
 <nav class="sidebar" id="sidebar">
@@ -154,7 +156,11 @@
   </footer>
 </div>
 
+<button id="themeToggle" class="btn btn-ghost btn-sm" style="display:none;">Toggle theme</button>
+
 <script src="/static/app.js"></script>
+<script src="/static/theme-toggle.js"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>
+

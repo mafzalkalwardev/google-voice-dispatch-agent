@@ -1,0 +1,29 @@
+/* Light/Dark theme support for Indus Dispatch Console */
+
+/* Default: light */
+:root {
+  --theme-bg: #f8fafc;
+  --theme-surface: #ffffff;
+  --theme-border: #e2e8f0;
+  --theme-text: #0f172a;
+  --theme-muted: #64748b;
+}
+
+/* Apply dark theme by toggling data-theme="dark" on <html> */
+html[data-theme="dark"] {
+  --theme-bg: #0b1220;
+  --theme-surface: #0f172a;
+  --theme-border: rgba(148,163,184,.22);
+  --theme-text: rgba(255,255,255,.92);
+  --theme-muted: rgba(148,163,184,.85);
+}
+
+/* Map theme tokens into existing design tokens used by app.css */
+html[data-theme="dark"] {
+  --bg: var(--theme-bg);
+  --surface: var(--theme-surface);
+  --border: var(--theme-border);
+  --text: var(--theme-text);
+  --muted: var(--theme-muted);
+}
+

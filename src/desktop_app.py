@@ -90,11 +90,21 @@ def main() -> None:
     if args and args[0] == "--agent-cli":
         run_agent_cli(args[1:])
         return
+
     port = _console_port(args)
+
+    # Ensure the console port is available (force-kill previous runs).
+    try:
+        from src.scripts.kill_port import kill_port  # type: ignore
+        kill_port(port)
+    except Exception:
+        pass
+
     if "--no-browser" in args:
         run_console(open_browser=False, port=port)
         return
     run_console(open_browser=True, port=port)
+
 
 
 if __name__ == "__main__":

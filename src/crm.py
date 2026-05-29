@@ -232,13 +232,27 @@ def _call_id(session: CallSession, contact: dict, lead: dict) -> str:
 
 
 def _has_real_conversation(transcript_text: str) -> bool:
-    """A connected CRM call must include at least one real carrier/prospect turn."""
+    """Heuristic to decide whether we should treat a call as a real conversation.
+
+    Important: this function is intentionally permissive.
+    The operator UI (recordings/transcript pages) should not hide calls just
+    because STT produced partial or unlabeled output.
+    """
+    if not _clean(transcript_text):
+        return False
+
+    # If we have any labeled turn with any meaningful spoken content, accept it.
     for line in transcript_text.splitlines():
         if re.search(r"\b(Prospect|Carrier|Driver|Customer)\s*:", line, re.I):
             spoken = line.split(":", 1)[-1]
-            if len(re.findall(r"[A-Za-z0-9]+", spoken)) >= 2:
+            if len(re.findall(r"[A-Za-z0-9]+", spoken)) >= 1:
                 return True
-    return False
+
+    # If we don't see labeled turns but there is still some meaningful STT text,
+    # consider it conversation-like.
+    return len(re.findall(r"[A-Za-z0-9]+", transcript_text)) >= 5
+
+
 
 
 def _classify_call(session: CallSession, transcript_text: str) -> tuple[str, str]:

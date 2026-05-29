@@ -42,15 +42,20 @@ class VADConfig:
 
 
 class EnergyVAD:
-    """
-    Stateful single-channel voice activity detector.
+    """Stateful single-channel voice activity detector.
 
     Call process_frame() for every audio frame.
     Returns a complete speech segment (float32 numpy array) when speech ends.
     Returns None for all other frames.
     """
 
+    @property
+    def is_in_speech(self) -> bool:
+        """Whether the VAD currently considers itself inside an utterance."""
+        return bool(getattr(self, "_in_speech", False))
+
     def __init__(self, config: Optional[VADConfig] = None):
+
         self.config = config or VADConfig()
         self._cfg = self.config
         self._reset_state()

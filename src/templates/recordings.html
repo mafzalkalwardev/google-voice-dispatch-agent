@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% set active_page = "recordings" %}
+
+{% block title %}Recordings — INDUS TRANSPORTS LLC{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-header-left">
+    <h2 class="page-title">Recordings</h2>
+    <p class="page-sub">Listen to attended/connected calls (audio stored under logs/recordings).</p>
+  </div>
+  <div class="quick-actions">
+    <a href="/connected-calls" class="btn btn-secondary btn-sm">Connected Calls</a>
+    <button class="btn btn-secondary btn-sm" onclick="location.reload()">Refresh</button>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <h3 class="panel-title">Attended Calls</h3>
+    <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+      <input id="recordingsSearch" class="log-filter-input" type="text" placeholder="Search by company / phone / email / carrier..." oninput="filterRecordings()" />
+    </div>
+  </div>
+
+  {% if calls %}
+  <div class="table-wrap">
+    <table class="data-table" id="recordingsTable">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Carrier</th>
+          <th>Phone</th>
+          <th>Truck</th>
+          <th>Status</th>
+          <th>Audio</th>
+          <th>Summary</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for call in calls %}
+        <tr data-search="{{ (call.company_name ~ ' ' ~ call.carrier_name ~ ' ' ~ call.name ~ ' ' ~ call.phone ~ ' ' ~ call.email ~ ' ' ~ call.preferred_lanes ~ ' ' ~ call.ai_summary) | lower }}">
+          <td class="td-mono td-nowrap">{{ call.timestamp }}</td>
+          <td>
+            <strong>{{ call.company_name or call.carrier_name or call.name or '-' }}</strong>
+            <div class="text-muted">{{ call.email or '-' }}</div>
+          </td>
+          <td class="td-mono">{{ call.phone or '-' }}</td>
+          <td>{{ call.truck_type or '-' }}{% if call.truck_length %}<br><span class="text-muted">{{ call.truck_length }}</span>{% endif %}</td>
+          <td><span class="badge badge--blue">{{ call.follow_up_status or call.interested_status or call.interested or 'Open' }}</span></td>
+          <td>
+            {% if call.recording_path %}
+              <audio controls preload="none" style="width:220px;">
+                <source src="/api/recordings/{{ call.id }}" type="audio/wav" />
+                Your browser does not support audio playback.
+              </audio>
+            {% else %}
+              <span class="link-muted">No recording</span>
+            {% endif %}
+          </td>
+          <td class="td-notes">{{ call.ai_summary or call.post_call_summary or '-' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <span class="empty-state-icon">🎧</span>
+    No attended-call recordings found yet.
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function filterRecordings() {
+  const query = (document.getElementById('recordingsSearch').value || '').toLowerCase();
+  document.querySelectorAll('#recordingsTable tbody tr').forEach(row => {
+    const search = row.getAttribute('data-search') || '';
+    row.style.display = (!query || search.includes(query)) ? '' : 'none';
+  });
+}
+</script>
+{% endblock %}
+

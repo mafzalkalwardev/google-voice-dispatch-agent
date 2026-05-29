@@ -1,0 +1,42 @@
+warning: in the working copy of '.env.example', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'dialer_config.example.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/audio_capture.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/audio_diagnostics.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/config.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/conversation_agent.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/conversation_loop.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/dispatcher_intelligence.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/main.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/preflight.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/realtime_tts.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/static/app.css', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/stt.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/templates/audio.html', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/templates/base.html', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/vad.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/web_app.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_audio_diagnostics.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_conversation_agent.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_conversation_loop.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'tests/test_preflight.py', LF will be replaced by CRLF the next time Git touches it
+.env.example
+dialer_config.example.json
+src/audio_capture.py
+src/audio_diagnostics.py
+src/config.py
+src/conversation_agent.py
+src/conversation_loop.py
+src/dispatcher_intelligence.py
+src/main.py
+src/preflight.py
+src/realtime_tts.py
+src/static/app.css
+src/stt.py
+src/templates/audio.html
+src/templates/base.html
+src/vad.py
+src/web_app.py
+tests/test_audio_diagnostics.py
+tests/test_conversation_agent.py
+tests/test_conversation_loop.py
+tests/test_preflight.py
