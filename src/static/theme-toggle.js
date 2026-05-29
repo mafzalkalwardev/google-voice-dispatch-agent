@@ -34,6 +34,8 @@
     function refreshLabel() {
       const current = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
       btn.textContent = current === 'dark' ? 'Light' : 'Dark';
+      const isDark = current === 'dark';
+      btn.setAttribute('aria-pressed', isDark ? 'true' : 'false');
     }
 
     btn.addEventListener('click', () => {
@@ -49,8 +51,12 @@
     refreshLabel();
   }
 
+
+  // Apply immediately to avoid flash of wrong theme.
+  // Still safe: only uses localStorage + matchMedia.
+  applyTheme(getPreferredTheme());
+
   document.addEventListener('DOMContentLoaded', () => {
-    applyTheme(getPreferredTheme());
     hookToggleButtons();
   });
 })();

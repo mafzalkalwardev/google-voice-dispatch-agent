@@ -74,7 +74,9 @@ _CONFIG_KEYS = [
     "company_name", "company_website", "company_context",
     "groq_model", "loopback_device", "call_timeout", "call_max_duration",
     "capture_device", "tts_voice", "stt_model", "vad_threshold",
+    "vad_silence_frames", "vad_speech_frames", "stt_retry_count", "tts_warmup", "call_cooldown_seconds",
 ]
+
 
 
 def _load_config() -> dict:
@@ -420,6 +422,31 @@ async def leads_page(request: Request):
     from src.leads import read_leads  # type: ignore
     leads = read_leads(LEADS_FILE)
     return templates.TemplateResponse(request, "leads.html", {"leads": leads})
+
+
+@app.get("/recordings", response_class=HTMLResponse)
+async def recordings_page(request: Request):
+    """Render attended/connected call recordings."""
+    from src.crm import get_connected_calls  # type: ignore
+
+    try:
+        calls = get_connected_calls() or []
+    except Exception:
+        calls = []
+
+    return templates.TemplateResponse(request, "recordings.html", {"calls": calls})
+
+
+@app.get("/recordings/{call_id}", response_class=HTMLResponse)
+async def recording_view_page(request: Request, call_id: str):
+    """Dedicated recording viewer (audio + transcript + AI summary)."""
+    from src.crm import get_connected_call  # type: ignore
+
+    call = get_connected_call(call_id)
+    return templates.TemplateResponse(request, "recording_view.html", {"call": call})
+
+
+
 
 
 @app.get("/connected-calls", response_class=HTMLResponse)

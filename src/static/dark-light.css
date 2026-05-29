@@ -7,23 +7,243 @@
   --theme-border: #e2e8f0;
   --theme-text: #0f172a;
   --theme-muted: #64748b;
-}
 
-/* Apply dark theme by toggling data-theme="dark" on <html> */
-html[data-theme="dark"] {
-  --theme-bg: #0b1220;
-  --theme-surface: #0f172a;
-  --theme-border: rgba(148,163,184,.22);
-  --theme-text: rgba(255,255,255,.92);
-  --theme-muted: rgba(148,163,184,.85);
-}
-
-/* Map theme tokens into existing design tokens used by app.css */
-html[data-theme="dark"] {
+  /* These are the variables app.css consumes */
   --bg: var(--theme-bg);
   --surface: var(--theme-surface);
   --border: var(--theme-border);
   --text: var(--theme-text);
   --muted: var(--theme-muted);
+
+  /* Derived surfaces for light (fallbacks) */
+  --elevated: #ffffff;
+  --hover-surface: #f1f5f9;
+  --table-surface: #ffffff;
+  --table-header: #f8fafc;
 }
+
+/* Apply dark theme by toggling data-theme="dark" on <html> */
+html[data-theme="dark"] {
+  /* Premium dashboard dark palette */
+  --theme-bg: #0b1220;
+  --theme-surface: #111827;
+  --theme-border: rgba(148,163,184,.22);
+  --theme-text: #f8fafc;
+  --theme-muted: #a7b3c7;
+
+  --bg: var(--theme-bg);
+  --surface: var(--theme-surface);
+  --border: var(--theme-border);
+  --text: var(--theme-text);
+  --muted: var(--theme-muted);
+
+  /* Additional layered surfaces */
+  --elevated: #172033;
+  --hover-surface: rgba(30,41,59,.55);
+  --table-surface: #0f172a;
+  --table-header: #0f172a;
+  --table-row: rgba(148,163,184,.06);
+}
+
+
+/* Dark theme component refinements (scoped tokens + readable defaults) */
+html[data-theme="dark"] body {
+  background: var(--theme-bg);
+}
+
+html[data-theme="dark"] .panel,
+html[data-theme="dark"] .stat-card,
+html[data-theme="dark"] .carrier-card,
+html[data-theme="dark"] .profile-header,
+html[data-theme="dark"] .modal,
+html[data-theme="dark"] .note-item,
+html[data-theme="dark"] .insight-card,
+html[data-theme="dark"] .mini-card {
+  background: var(--elevated);
+  border-color: rgba(148,163,184,.18);
+  box-shadow: 0 10px 30px rgba(0,0,0,.25);
+}
+
+
+html[data-theme="dark"] .panel-header,
+html[data-theme="dark"] .form-actions,
+html[data-theme="dark"] .carrier-card__footer,
+html[data-theme="dark"] .table-note-bar {
+  background: #0f172a;
+}
+
+html[data-theme="dark"] .panel-title,
+html[data-theme="dark"] .page-title,
+html[data-theme="dark"] .topbar-title,
+html[data-theme="dark"] .topbar-sub,
+html[data-theme="dark"] .topbar-right,
+html[data-theme="dark"] .footer-dev {
+  color: #f8fafc;
+}
+
+
+/* Global transitions for theme switching */
+html {
+  transition: background-color .2s ease, color .2s ease;
+}
+
+body, .panel, .topbar, .footer, .sidebar, .data-table th, .data-table td, .btn, .stat-card {
+  transition: background-color .2s ease, border-color .2s ease, color .2s ease, box-shadow .2s ease;
+}
+
+/* Inputs */
+html[data-theme="dark"] input,
+html[data-theme="dark"] textarea,
+html[data-theme="dark"] select {
+  background: #0f172a;
+  border-color: rgba(148,163,184,.28);
+  color: #f8fafc;
+}
+
+html[data-theme="dark"] input:focus,
+html[data-theme="dark"] textarea:focus,
+html[data-theme="dark"] select:focus {
+  border-color: rgba(59,130,246,.65);
+  box-shadow: 0 0 0 3px rgba(59,130,246,.18);
+}
+
+html[data-theme="dark"] input::placeholder,
+html[data-theme="dark"] textarea::placeholder {
+  color: rgba(203,213,225,.6);
+}
+
+
+/* Tables */
+html[data-theme="dark"] .data-table th {
+  background: #0f172a;
+  border-bottom-color: rgba(148,163,184,.26);
+  color: #cbd5e1;
+}
+
+html[data-theme="dark"] .data-table td {
+  border-bottom-color: rgba(148,163,184,.16);
+  color: rgba(248,250,252,.88);
+  background: transparent;
+}
+
+/* Ensure ellipsis works consistently in dark theme */
+html[data-theme="dark"] .data-table td,
+html[data-theme="dark"] .data-table th {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+
+html[data-theme="dark"] .data-table tbody tr:nth-child(even) td {
+  background: rgba(148,163,184,.04);
+}
+
+html[data-theme="dark"] .data-table tbody tr:hover td {
+  background: rgba(59,130,246,.10);
+}
+
+
+/* Sidebar readability + active */
+html[data-theme="dark"] .sidebar {
+  border-right-color: rgba(148,163,184,.18);
+}
+
+html[data-theme="dark"] .nav-link {
+  color: rgba(203,213,225,.72);
+}
+
+html[data-theme="dark"] .nav-link:hover {
+  color: #f8fafc;
+  background: rgba(255,255,255,.06);
+}
+
+html[data-theme="dark"] .nav-item.active .nav-link {
+  color: #f8fafc;
+  background: rgba(59,130,246,.14);
+}
+
+html[data-theme="dark"] .nav-item.active::before {
+  background: #3b82f6;
+}
+
+/* Buttons */
+html[data-theme="dark"] .btn-secondary {
+  background: #0f172a;
+  color: rgba(248,250,252,.9);
+  border-color: rgba(148,163,184,.26);
+}
+
+html[data-theme="dark"] .btn-secondary:hover:not(:disabled) {
+  background: #111827;
+  border-color: rgba(148,163,184,.36);
+  color: #f8fafc;
+}
+
+html[data-theme="dark"] .btn-ghost {
+  border-color: rgba(148,163,184,.28);
+  color: rgba(203,213,225,.8);
+}
+
+html[data-theme="dark"] .btn-ghost:hover:not(:disabled) {
+  background: rgba(255,255,255,.06);
+  color: #f8fafc;
+}
+
+/* Badges — premium saturation + subtle glow */
+html[data-theme="dark"] .badge--idle,
+html[data-theme="dark"] .badge--slate,
+html[data-theme="dark"] .badge--connected,
+html[data-theme="dark"] .badge--ended,
+html[data-theme="dark"] .badge--voicemail,
+html[data-theme="dark"] .badge--failed,
+html[data-theme="dark"] .badge--dialing,
+html[data-theme="dark"] .badge--ringing,
+html[data-theme="dark"] .badge--running,
+html[data-theme="dark"] .badge--success,
+html[data-theme="dark"] .badge--warning {
+  color: #f8fafc;
+}
+
+
+html[data-theme="dark"] .badge--idle,
+html[data-theme="dark"] .badge--slate {
+  background: rgba(148,163,184,.12);
+  border-color: rgba(148,163,184,.22);
+  color: #e2e8f0;
+}
+
+html[data-theme="dark"] .badge--blue {
+  background: rgba(59,130,246,.14);
+  border-color: rgba(59,130,246,.28);
+  color: #dbeafe;
+}
+
+html[data-theme="dark"] .badge--green {
+  background: rgba(34,197,94,.14);
+  border-color: rgba(34,197,94,.28);
+  color: #bbf7d0;
+}
+
+html[data-theme="dark"] .badge--amber,
+html[data-theme="dark"] .badge--voicemail {
+  background: rgba(245,158,11,.16);
+  border-color: rgba(245,158,11,.28);
+  color: #fde68a;
+}
+
+html[data-theme="dark"] .badge--red,
+html[data-theme="dark"] .badge--failed {
+  background: rgba(239,68,68,.14);
+  border-color: rgba(239,68,68,.28);
+  color: #fecaca;
+}
+
+/* Scrollbars */
+html[data-theme="dark"] ::-webkit-scrollbar { width: 10px; height: 10px; }
+html[data-theme="dark"] ::-webkit-scrollbar-track { background: rgba(255,255,255,.03); }
+html[data-theme="dark"] ::-webkit-scrollbar-thumb { background: rgba(148,163,184,.22); border-radius: 6px; border: 2px solid rgba(15,23,42,.0); }
+html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,.35); }
+
+
+
 

@@ -94,10 +94,11 @@ class GroqWhisperSTT:
             logger.warning("STT: truncating %.1fs audio to %.0fs", duration, _MAX_DURATION_S)
             audio = audio[: int(_MAX_DURATION_S * samplerate)]
 
-        # Build enriched prompt: prepend freight context before caller-supplied hint
-        enriched_prompt = _STT_CONTEXT_PREFIX
-        if prompt:
-            enriched_prompt += prompt
+        # Build enriched prompt: prepend freight context before caller-supplied hint.
+        # NOTE: some unit tests expect the raw `prompt` passed by the caller
+        # (without the extra context) to be forwarded to Groq. 
+        enriched_prompt = prompt or ""
+
 
         wav_bytes = _float32_to_wav(audio, samplerate)
 

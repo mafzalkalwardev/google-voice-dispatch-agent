@@ -15,6 +15,9 @@ import time
 import wave
 from pathlib import Path
 from typing import Callable, Optional
+import difflib
+
+
 
 import numpy as np
 
@@ -27,6 +30,8 @@ from src.realtime_diagnostics import DIAGNOSTICS_PATH, write_live_diagnostics
 from src.realtime_tts import RealtimeTTS
 from src.stt import GroqWhisperSTT
 from src.vad import EnergyVAD, VADConfig
+from src.voicemail_detector import VoicemailAudioClassifier
+
 
 logger = logging.getLogger("GoogleVoiceAgent")
 
@@ -54,6 +59,7 @@ class ConversationLoop:
         tts: RealtimeTTS,
         agent: ConversationAgent,
         stt: GroqWhisperSTT,
+
         vad_config: Optional[VADConfig] = None,
         calibrate_frames: int = 40,
         stt_prompt: str = "Indus Transports freight dispatch",
@@ -127,6 +133,18 @@ class ConversationLoop:
         self._last_tts_text = ""
         self._last_tts_duration = 0.0
 
+        # Tony echo semantic suppression settings
+        self._toney_echo_similarity_threshold = 0.86
+        self._toney_echo_min_transcript_chars = 12
+
+
+        # Voicemail detection (first N seconds after call connect)
+        self._voicemail_detector = VoicemailAudioClassifier(samplerate=_SAMPLERATE)
+
+        self._voicemail_check_deadline_monotonic = 0.0
+        self._voicemail_detected = False
+
+
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
@@ -146,6 +164,12 @@ class ConversationLoop:
 
         self._loop_iteration = 0
         self._last_speech_activity = time.monotonic()
+
+        # Reset voicemail detection window for this call.
+        self._voicemail_detector.reset()
+        self._voicemail_check_deadline_monotonic = self._last_speech_activity + 15.0
+        self._voicemail_detected = False
+
         self._next_silence_log = self._last_speech_activity + self._max_silence_seconds
         self._set_state(STATE_WAITING_FOR_ANSWER, "call connected; starting capture before TTS")
 
@@ -370,7 +394,40 @@ class ConversationLoop:
     # Transcript and recording helpers
     # ------------------------------------------------------------------ #
 
+    def _normalize_text_for_similarity(self, text: str) -> str:
+        # Lowercase, strip punctuation-ish chars, collapse whitespace.
+        t = "".join(ch.lower() if ch.isalnum() or ch.isspace() else " " for ch in (text or ""))
+        return " ".join(t.split())
+
+    def _is_tony_echo_transcript(self, stt_text: str) -> bool:
+        """Return True if stt_text likely matches Tony's last TTS output."""
+        if not stt_text:
+            return False
+        toney = self._last_tts_text or ""
+        if not toney:
+            return False
+
+        stt_norm = self._normalize_text_for_similarity(stt_text)
+        tts_norm = self._normalize_text_for_similarity(toney)
+
+        if len(stt_norm) < self._toney_echo_min_transcript_chars:
+            return False
+
+        # Fast path: substring match (handles partial transcription)
+        if stt_norm in tts_norm or tts_norm in stt_norm:
+            return True
+
+        ratio = difflib.SequenceMatcher(None, stt_norm, tts_norm).ratio()
+        logger.debug(
+            "[ECHO] similarity ratio=%.3f stt='%s' tts='%s'",
+            ratio,
+            stt_norm,
+            tts_norm,
+        )
+        return ratio >= self._toney_echo_similarity_threshold
+
     def _write_transcript(self, speaker: str, text: str) -> None:
+
         if not self._transcript_path or not text:
             return
         ts = time.strftime("%H:%M:%S")
@@ -509,7 +566,27 @@ class ConversationLoop:
                 continue
 
             before = self._vad.is_in_speech
+            # Voicemail detection for the first 15 seconds after call connect.
+            if not self._voicemail_detected and time.monotonic() <= self._voicemail_check_deadline_monotonic:
+                try:
+                    label = self._voicemail_detector.process_frame(frame, samplerate=_SAMPLERATE)
+                    if label in ("beep_detected", "voicemail_greeting"):
+                        self._voicemail_detected = True
+                        logger.info("[VM] Voicemail detected early; stopping conversation loop")
+                        if self._session is not None and not self._session.is_terminal():
+                            try:
+                                self._session.outcome = "voicemail"
+                                self._session.transition(CallState.VOICEMAIL, "voicemail detected early")
+                            except ValueError:
+                                # Transition already occurred or illegal; ignore.
+                                pass
+                        self.stop()
+                        return
+                except Exception as exc:
+                    logger.debug("[VM] detection frame error: %s", exc)
+
             segment = self._vad.process_frame(frame)
+
             after = self._vad.is_in_speech
             self._write_diagnostics(vad_detected=after or rms >= threshold)
 
@@ -675,9 +752,16 @@ class ConversationLoop:
             if self._stop_event.is_set():
                 break
 
+            # Re-check TTS state right before STT; unit tests expect that if
+            # TTS is speaking, we do not even call STT.
+            if self.tts.is_speaking():
+                logger.info("[RESPONSE] segment skipped because TTS is speaking")
+                continue
+
             self._loop_iteration += 1
             duration = len(audio_segment) / float(_SAMPLERATE)
             self._set_state(STATE_TRANSCRIBING, f"audio_duration={duration:.2f}s")
+
 
             # Build a per-call enriched STT prompt including known carrier context
             dynamic_prompt = (
@@ -687,10 +771,12 @@ class ConversationLoop:
 
             try:
                 transcript = self.stt.transcribe(
+
                     audio_segment,
                     samplerate=_SAMPLERATE,
                     prompt=dynamic_prompt,
                 )
+
             except Exception as exc:
                 self._last_empty_stt_reason = f"exception: {exc}"
                 self._write_diagnostics(last_empty_stt_reason=self._last_empty_stt_reason)
@@ -700,15 +786,26 @@ class ConversationLoop:
 
             if not transcript:
                 reason = getattr(self.stt, "last_empty_reason", "") or "STT returned empty text"
+
                 self._last_empty_stt_reason = reason
                 self._write_diagnostics(last_empty_stt_reason=reason)
                 logger.info("[STT] Empty reason=%s", reason)
                 self._set_state(STATE_LISTENING, "empty STT; waiting for next speech")
                 continue
 
+            # Tony self-talk suppression: if STT transcript looks like our last TTS output,
+            # treat it as echo and ignore it.
+            if self._is_tony_echo_transcript(transcript):
+                self._last_empty_stt_reason = "suppressed_tony_echo_similarity"
+                self._write_diagnostics(last_empty_stt_reason=self._last_empty_stt_reason)
+                logger.info("[STT] Suppressed Tony echo transcript=%s", transcript)
+                self._set_state(STATE_LISTENING, "suppressed tony echo")
+                continue
+
             self._last_stt_text = transcript
             self._last_empty_stt_reason = ""
             logger.info("[STT] response_text=%s", transcript)
+
             self._write_diagnostics(last_stt_text=transcript, last_empty_stt_reason="")
             self._write_transcript("Prospect", transcript)
 
@@ -722,7 +819,10 @@ class ConversationLoop:
             logger.info("[RESPONSE] Tony: %s", response)
             self._write_transcript("Tony", response)
             # Reply path: prefer speak_async so unit tests can assert it.
+            # Store last TTS for self-talk suppression.
+            self._last_tts_text = response
             self._play_tts_async_like(response, STATE_SPEAKING_REPLY, "reply")
+
 
             if self.agent.should_end_call():
                 logger.info("[RESPONSE] Agent requested graceful call end")

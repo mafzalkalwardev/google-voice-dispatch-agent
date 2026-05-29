@@ -85,19 +85,67 @@ class GroqAgent:
         self.model = model
 
     def _complete(self, system: str, user: str, max_tokens: int = 512) -> str:
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            max_tokens=max_tokens,
-            temperature=0.72,
+        """Call Groq with simple retry/backoff on rate-limit errors.
+
+        If the API fails even after retries, return a safe fallback so the
+        dialing loop doesn't crash or go silent.
+        """
+
+        fallback = (
+            "Hi, this is Tony with Indus Transports LLC. "
+            "I’m calling because we help carriers keep dispatch moving with less "
+            "broker paperwork delays and more consistent load options. "
+            "Are you currently running Dry Van, Reefer, or Flatbed?"
         )
-        text = response.choices[0].message.content.strip()
-        if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
-            text = text[1:-1].strip()
-        return text
+
+
+        delays = [2, 5, 10]
+        last_exc: Exception | None = None
+
+        for attempt in range(3):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=0.72,
+                )
+                text = response.choices[0].message.content.strip()
+                if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+                    text = text[1:-1].strip()
+                return text
+            except Exception as exc:  # groq raises library-specific exceptions
+                last_exc = exc
+                msg = str(exc).lower()
+                is_rate_limited = (
+                    "429" in msg
+                    or "rate limit" in msg
+                    or "rate-limited" in msg
+                    or "too many requests" in msg
+                    or "rate_limit" in msg
+                )
+
+                if is_rate_limited and attempt < len(delays):
+                    delay_s = delays[attempt]
+                    logger.warning(
+                        "Groq rate limited (attempt %d/%d). Backing off %ss. Error: %s",
+                        attempt + 1,
+                        3,
+                        delay_s,
+                        exc,
+                    )
+                    time.sleep(delay_s)
+                    continue
+
+                # Non-rate-limit errors (or last attempt) — break to fallback.
+                break
+
+        logger.error("Groq completion failed; using fallback. Error: %s", last_exc)
+        return fallback
+
 
     def generate_call_script(
         self,

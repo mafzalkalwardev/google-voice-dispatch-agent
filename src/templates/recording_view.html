@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% set active_page = "recordings" %}
+
+{% block title %}Recording — INDUS TRANSPORTS LLC{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-header-left">
+    <h2 class="page-title">Recording</h2>
+    <p class="page-sub">Listen to the full WAV for the selected call.</p>
+  </div>
+  <div class="quick-actions">
+    <a href="/recordings" class="btn btn-secondary btn-sm">Back to Recordings</a>
+  </div>
+</div>
+
+{% if call %}
+<div class="panel">
+  <div class="panel-header">
+    <h3 class="panel-title">{{ call.company_name or call.carrier_name or call.name or call.phone or call.id }}</h3>
+    <span class="text-muted" style="font-size:.78rem">{{ call.timestamp }}</span>
+  </div>
+
+  <div style="padding:1.25rem">
+    <div style="display:grid;grid-template-columns:1.3fr .7fr;gap:1rem;align-items:start;">
+      <div>
+        {% if call.recording_path %}
+          <audio controls preload="none" style="width:100%">
+            <source src="/api/recordings/{{ call.id }}" type="audio/wav" />
+            Your browser does not support audio playback.
+          </audio>
+        {% else %}
+          <div class="empty-state">No recording file available for this call.</div>
+        {% endif %}
+      </div>
+
+      <div>
+        <div class="info-list">
+          <div class="info-row"><dt>ID</dt><dd style="font-family:JetBrains Mono, monospace">{{ call.id }}</dd></div>
+          <div class="info-row"><dt>Phone</dt><dd>{{ call.phone or '-' }}</dd></div>
+          <div class="info-row"><dt>Status</dt><dd>{{ call.follow_up_status or call.interested_status or call.interested or 'Open' }}</dd></div>
+          <div class="info-row"><dt>Truck</dt><dd>{{ call.truck_type or '-' }}{% if call.truck_length %}<br><span class="text-muted">{{ call.truck_length }}</span>{% endif %}</dd></div>
+          <div class="info-row"><dt>Duration</dt><dd>{{ call.connected_duration or call.connected_duration_s or '-' }}</dd></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="transcript-viewer" style="padding:0 0 0">
+      <h3 class="panel-title" style="padding:0 0 .75rem">Transcript</h3>
+
+      <div class="transcript-loading" id="transcriptStatus">Loading transcript…</div>
+      <div class="transcript-text" id="transcriptText" style="display:none"></div>
+      <script>
+        (function () {
+          const filename = '';
+          const statusEl = document.getElementById('transcriptStatus');
+          const textEl = document.getElementById('transcriptText');
+
+          if (!filename) {
+            statusEl.textContent = 'No transcript file available.';
+            return;
+          }
+
+          fetch('/api/transcript/' + encodeURIComponent(filename))
+            .then(r => r.json())
+            .then(data => {
+              if (!data.text) {
+                statusEl.textContent = 'Transcript not found.';
+                return;
+              }
+              textEl.textContent = data.text;
+              textEl.style.display = 'block';
+              statusEl.style.display = 'none';
+            })
+            .catch(() => {
+              statusEl.textContent = 'Failed to load transcript.';
+            });
+        })();
+      </script>
+    </div>
+
+    <div class="divider"></div>
+
+    <div>
+      <h3 class="panel-title" style="padding:0 0 .75rem">AI Summary</h3>
+      <div class="transcript-text" style="background:var(--gray-50);border:1px solid var(--border);padding:1rem">{{ call.ai_summary or call.post_call_summary or '-' }}</div>
+    </div>
+  </div>
+</div>
+{% else %}
+<div class="empty-state">
+  <span class="empty-state-icon">🎧</span>
+  Recording not found.
+</div>
+{% endif %}
+{% endblock %}
+

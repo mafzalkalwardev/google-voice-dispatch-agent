@@ -1,9 +1,5 @@
-# TODO - Dark mode UX + Recording/Tony reliability
+- [x] Add `browser.is_logged_in()` guard before each dial attempt in `src/main.py`; stop with `Google Voice login required.`
+- [ ] Add Groq API retry/backoff and safe fallback in `src/ai_groq.py` (429/rate limits: retry 3 times with delays 2s, 5s, 10s; then return fallback text instead of crashing/silence).
 
-- [ ] Inspect and fix recording page “vanished” cause by validating CRM connected-call classification
-- [ ] Relax CRM connected-call gating so UI shows recordings/transcripts even when STT transcript is partially empty
-- [ ] Add safe fallback rules for transcript generation from recording artifacts
-- [ ] Improve dark-mode readability for audio/transcript widgets (contrast adjustments)
-- [ ] Add a simple UI debug hint when no connected calls exist (optional)
-- [ ] Run quick python compile/lint checks and verify runtime
+
 

@@ -211,6 +211,32 @@ def _run_call(
     voicemail_text_path.write_text(voicemail_text, encoding="utf-8")
 
     save_text_to_speech(voicemail_text, voicemail_path)
+
+    # Pre-generate realtime opening line before dialing so pickup is not silent.
+    if realtime:
+        agent_opening_ok = False
+        try:
+            opening_line = _generate_realtime_opening_line(
+                contact_name=name,
+                groq_api_key=groq_api_key,
+                groq_model=ai.model,
+                agent_name=agent_name,
+                company_name=company_name,
+                company_context=company_context,
+                company_website=company_website,
+                callback_number=callback_number,
+                logger=logger,
+                index=index,
+            )
+            agent_opening_ok = bool(opening_line)
+        except Exception as exc:
+            logger.error("[%d] Opening line generation failed (will use fallback): %s", index, exc)
+            agent_opening_ok = False
+
+        if not agent_opening_ok:
+            opening_line = _fallback_opening_line(agent_name=agent_name, company_name=company_name)
+            logger.warning("[%d] Using fallback static opening line: %s", index, opening_line)
+
     if realtime:
         logger.info("[%d] Realtime mode ready; voicemail fallback: %s", index, voicemail_path.name)
     else:
@@ -1013,10 +1039,16 @@ def main() -> None:
 
     logger.info("Logged in. Starting call loop (%d contacts).", min(len(contacts), args.limit))
 
+    call_cooldown_seconds = float(getattr(cfg, "call_cooldown_seconds", 10.0))
+
     try:
         for i, contact in enumerate(contacts[: args.limit], start=1):
+            if not browser.is_logged_in():
+                raise SystemExit("Google Voice login required.")
             try:
                 _run_call(
+
+
                     contact, i, browser, ai, call_logger, logger,
                     script_dir, voicemail_dir,
                     args.objective, args.offer,
@@ -1045,7 +1077,11 @@ def main() -> None:
             if browser.driver is None:
                 logger.error("Chrome/Google Voice session is no longer available; stopping call loop.")
                 break
-            time.sleep(2)  # brief pause between calls
+            if call_cooldown_seconds > 0 and not args.dry_run:
+                time.sleep(call_cooldown_seconds)
+            else:
+                time.sleep(2)  # brief pause between calls
+
     finally:
         browser.close()
 

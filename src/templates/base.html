@@ -7,6 +7,26 @@
   <link rel="stylesheet" href="/static/app.css" />
   <link rel="stylesheet" href="/static/dark-light.css" />
   <link rel="icon" href="/static/indus-logo.jpg" />
+
+  <script>
+    (function () {
+      const storageKey = 'indus_theme';
+      function applyTheme(theme) {
+        const html = document.documentElement;
+        if (theme === 'dark') html.setAttribute('data-theme', 'dark');
+        else html.removeAttribute('data-theme');
+      }
+      function getPreferredTheme() {
+        let theme = null;
+        try { theme = localStorage.getItem(storageKey); } catch (_) { theme = null; }
+        if (theme === 'light' || theme === 'dark') return theme;
+        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+        return prefersDark ? 'dark' : 'light';
+      }
+      // Priority: saved -> system -> light fallback (never random).
+      applyTheme(getPreferredTheme());
+    })();
+  </script>
 </head>
 <body>
 
@@ -101,7 +121,22 @@
       </a>
     </li>
 
+    <li class="nav-section-label">AI &amp; Operations</li>
+
+    <li class="nav-item {% if active_page == 'recordings' %}active{% endif %}">
+      <a href="/recordings" class="nav-link">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M9 11V7a3 3 0 0 1 6 0v4"/>
+          <path d="M12 18a3 3 0 0 0 3-3v-1a3 3 0 0 0-6 0v1a3 3 0 0 0 3 3z"/>
+          <path d="M4 18v-2a4 4 0 0 1 4-4"/>
+          <path d="M20 18v-2a4 4 0 0 0-4-4"/>
+        </svg>
+        Recordings
+      </a>
+    </li>
+
     <li class="nav-section-label">CRM &amp; Intelligence</li>
+
 
     <li class="nav-item {% if active_page == 'connected_calls' %}active{% endif %}">
       <a href="/connected-calls" class="nav-link">
@@ -143,10 +178,19 @@
     <div class="topbar-right">
       <span id="topbarClock"></span>
       <span class="status-pill" id="globalStatusPill">IDLE</span>
+
+      <button id="themeToggle"
+              class="btn btn-ghost btn-sm"
+              type="button"
+              aria-label="Toggle dark/light theme"
+              aria-pressed="false">
+        Theme
+      </button>
     </div>
   </header>
 
   <main class="main-content">
+
     {% block content %}{% endblock %}
   </main>
 
@@ -156,9 +200,9 @@
   </footer>
 </div>
 
-<button id="themeToggle" class="btn btn-ghost btn-sm" style="display:none;">Toggle theme</button>
 
 <script src="/static/app.js"></script>
+
 <script src="/static/theme-toggle.js"></script>
 {% block scripts %}{% endblock %}
 </body>

@@ -17,7 +17,10 @@
 
 <div class="panel">
   <div class="panel-header">
-    <h3 class="panel-title">Attended Calls</h3>
+    <h3 class="panel-title">Connected Calls</h3>
+    <div style="margin-top:.25rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
+      <a class="link-muted" href="/recordings">All</a>
+    </div>
     <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
       <input id="recordingsSearch" class="log-filter-input" type="text" placeholder="Search by company / phone / email / carrier..." oninput="filterRecordings()" />
     </div>
@@ -50,6 +53,7 @@
           <td><span class="badge badge--blue">{{ call.follow_up_status or call.interested_status or call.interested or 'Open' }}</span></td>
           <td>
             {% if call.recording_path %}
+              <a class="link-muted" href="/recordings/{{ call.id }}" style="margin-right:.5rem">View</a>
               <audio controls preload="none" style="width:220px;">
                 <source src="/api/recordings/{{ call.id }}" type="audio/wav" />
                 Your browser does not support audio playback.
