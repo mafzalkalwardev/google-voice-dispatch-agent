@@ -157,6 +157,9 @@ def _run_call(
     wait_for_human_audio: bool = True,
     human_audio_timeout: float = 8.0,
     answer_confirm_polls: int = 2,
+    stt_retry_count: int = 2,
+    vad_silence_frames: int = 12,
+    vad_speech_frames: int = 2,
 ) -> None:
     phone = contact["phone"]
     name = contact["name"]
@@ -265,6 +268,9 @@ def _run_call(
                 answered_speak_delay=answered_speak_delay,
                 wait_for_human_audio=wait_for_human_audio,
                 human_audio_timeout=human_audio_timeout,
+                stt_retry_count=stt_retry_count,
+                vad_silence_frames=vad_silence_frames,
+                vad_speech_frames=vad_speech_frames,
             )
         else:
             logger.info("[%d] Call connected — playing script audio", index)
@@ -473,6 +479,9 @@ def _run_realtime_loop(
     answered_speak_delay: float = 4.0,
     wait_for_human_audio: bool = True,
     human_audio_timeout: float = 8.0,
+    stt_retry_count: int = 2,
+    vad_silence_frames: int = 12,
+    vad_speech_frames: int = 2,
 ) -> None:
     from src.conversation_agent import ConversationAgent
     from src.conversation_loop import ConversationLoop
@@ -505,8 +514,12 @@ def _run_realtime_loop(
             callback_number=callback_number,
             contact_name=contact_name,
         )
-        stt = GroqWhisperSTT(api_key=groq_api_key, model=stt_model)
-        vad_cfg = VADConfig(speech_threshold=vad_threshold)
+        stt = GroqWhisperSTT(api_key=groq_api_key, model=stt_model, retry_count=stt_retry_count)
+        vad_cfg = VADConfig(
+            speech_threshold=vad_threshold,
+            silence_trigger_frames=vad_silence_frames,
+            speech_trigger_frames=vad_speech_frames,
+        )
         loop = ConversationLoop(
             capture_device_hint=capture_device,
             tts=tts,
@@ -870,6 +883,9 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
             wait_for_human_audio=cfg.wait_for_human_audio,
             human_audio_timeout=cfg.human_audio_timeout_seconds,
             answer_confirm_polls=cfg.answer_confirm_polls,
+            stt_retry_count=cfg.stt_retry_count,
+            vad_silence_frames=cfg.vad_silence_frames,
+            vad_speech_frames=cfg.vad_speech_frames,
         )
     finally:
         browser.close()
@@ -972,6 +988,9 @@ def main() -> None:
                 wait_for_human_audio=cfg.wait_for_human_audio,
                 human_audio_timeout=cfg.human_audio_timeout_seconds,
                 answer_confirm_polls=cfg.answer_confirm_polls,
+            stt_retry_count=cfg.stt_retry_count,
+            vad_silence_frames=cfg.vad_silence_frames,
+            vad_speech_frames=cfg.vad_speech_frames,
             )
         logger.info("Dry run complete. Audio files in %s/", output_dir)
         return
@@ -1016,6 +1035,9 @@ def main() -> None:
                     wait_for_human_audio=cfg.wait_for_human_audio,
                     human_audio_timeout=cfg.human_audio_timeout_seconds,
                     answer_confirm_polls=cfg.answer_confirm_polls,
+            stt_retry_count=cfg.stt_retry_count,
+            vad_silence_frames=cfg.vad_silence_frames,
+            vad_speech_frames=cfg.vad_speech_frames,
                 )
             except WebDriverException as exc:
                 logger.error("Chrome/Google Voice session ended; stopping call loop: %s", exc)
