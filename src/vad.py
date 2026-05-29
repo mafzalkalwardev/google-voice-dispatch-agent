@@ -28,17 +28,27 @@ class VADConfig:
     speech_threshold: float = 0.015
 
     # Consecutive speech frames required before declaring speech started.
-    speech_trigger_frames: int = 3
+    # 2 frames × 30 ms = 60 ms onset — fast response without false triggers.
+    speech_trigger_frames: int = 2
 
     # Consecutive silence frames required before declaring speech ended.
-    # 30 frames × 30 ms = 900 ms trailing silence.
-    silence_trigger_frames: int = 30
+    # 12 frames × 30 ms = 360 ms trailing silence — much tighter than 900 ms.
+    # This lets Tony reply ~540 ms faster after the carrier finishes speaking.
+    silence_trigger_frames: int = 12
 
     # Hard cap on segment length.
     max_speech_seconds: float = 25.0
 
     # Pre-roll: frames prepended from the ring buffer before speech started.
     pre_speech_pad_frames: int = 5
+
+    # Minimum threshold floor — never calibrate below this (avoids false triggers
+    # on silent-room noise floor).
+    min_threshold: float = 0.004
+
+    # Hysteresis factor: once in speech, require threshold * this multiplier
+    # to fall out of speech (reduces mid-word choppping on quiet speakers).
+    hysteresis_factor: float = 0.70
 
 
 class EnergyVAD:
@@ -67,16 +77,27 @@ class EnergyVAD:
     def process_frame(self, frame: np.ndarray) -> Optional[np.ndarray]:
         """
         Feed one audio frame. Returns a complete utterance or None.
+        Uses hysteresis so quiet speakers don't get chopped mid-word.
         """
         rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
-        is_speech = rms >= self.config.speech_threshold
+
+        # Hysteresis: once inside speech, use a lower effective threshold
+        # so quiet phone audio doesn't get fragmented.
+        if self._in_speech:
+            effective_threshold = (
+                self.config.speech_threshold * self.config.hysteresis_factor
+            )
+        else:
+            effective_threshold = self.config.speech_threshold
+
+        is_speech = rms >= effective_threshold
 
         if not self._in_speech:
             self._ring.append(frame)
             if len(self._ring) > self.config.pre_speech_pad_frames:
                 self._ring.pop(0)
 
-            self._speech_trigger = (self._speech_trigger + 1) if is_speech else 0
+            self._speech_trigger = (self._speech_trigger + 1) if is_speech else max(0, self._speech_trigger - 1)
 
             if self._speech_trigger >= self.config.speech_trigger_frames:
                 self._in_speech = True
@@ -88,7 +109,11 @@ class EnergyVAD:
             self._speech_buf.append(frame)
             self._speech_frames += 1
 
-            self._silence_count = (self._silence_count + 1) if not is_speech else 0
+            if not is_speech:
+                self._silence_count += 1
+            else:
+                # Reset silence counter on any speech — handles brief pauses
+                self._silence_count = 0
 
             max_frames = int(
                 self.config.max_speech_seconds
@@ -108,14 +133,20 @@ class EnergyVAD:
     def calibrate_threshold(self, silence_frames: List[np.ndarray]) -> float:
         """
         Auto-calibrate from ambient noise frames.
-        Sets threshold to 3× the mean RMS of provided silence frames.
+        Sets threshold to 3.5× the mean RMS of provided silence frames,
+        but never below config.min_threshold to prevent false triggers.
+        Also uses the 90th percentile instead of mean to better handle
+        frames with brief noise bursts in the calibration window.
         Returns the new threshold.
         """
         if not silence_frames:
             return self.config.speech_threshold
-        rmss = [float(np.sqrt(np.mean(f.astype(np.float64) ** 2))) for f in silence_frames]
-        ambient = float(np.mean(rmss))
-        new_threshold = max(ambient * 3.0, 0.005)
+        rmss = np.array([float(np.sqrt(np.mean(f.astype(np.float64) ** 2))) for f in silence_frames])
+        # Use 90th percentile to be robust against noise bursts during calibration
+        ambient = float(np.percentile(rmss, 90))
+        new_threshold = max(ambient * 3.5, self.config.min_threshold)
+        # Don't lower threshold drastically in one calibration step
+        new_threshold = max(new_threshold, self.config.speech_threshold * 0.3)
         self.config.speech_threshold = new_threshold
         return new_threshold
 

@@ -73,6 +73,7 @@ _NEGATIVE_SIGNALS = frozenset([
 
 _MAX_TURNS_DEFAULT = 18
 _MAX_TURNS_ENGAGED = 40
+_CONSECUTIVE_NEGATIVES_THRESHOLD = 3  # raised from 2 — carriers sometimes say no twice, then engage
 
 # Trucking-specific terms that indicate a genuine carrier conversation
 _ENGAGEMENT_KEYWORDS = frozenset([
@@ -89,12 +90,24 @@ _ENGAGEMENT_KEYWORDS = frozenset([
 
 
 def _clean_spoken_text(text: str) -> str:
+    """Remove any AI output artifacts that should not be spoken aloud."""
     text = (text or "").strip()
-    for prefix in ("Tony:", "Agent:", "Assistant:"):
+    # Strip common label prefixes the LLM sometimes outputs
+    for prefix in (
+        "Tony:", "Agent:", "Assistant:", "[Tony]", "[Agent]",
+        "TONY:", "AGENT:", "AI:", "Bot:", "Tony (agent):",
+        "Dispatch Agent:", "Response:",
+    ):
         if text.lower().startswith(prefix.lower()):
             text = text[len(prefix):].strip()
+    # Strip surrounding quotes
     if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
         text = text[1:-1].strip()
+    # Strip markdown bold/italic that edge cases produce
+    text = text.replace("**", "").replace("__", "").replace("*", "")
+    # Collapse whitespace
+    import re
+    text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
@@ -133,19 +146,32 @@ class ConversationAgent:
 
     def opening_line(self) -> str:
         """Generate Tony's first spoken greeting — warm and human, not a pitch."""
+        # Varied openers to avoid sounding scripted on repeated calls
         prompt = (
-            f"Write one warm, natural phone greeting for an outbound freight dispatch call. "
+            f"Write ONE warm, natural phone greeting for an outbound freight dispatch call. "
             f"You are {self.agent_name} from {self.company_name}. "
             "Style: casual, conversational, friendly — like a real person calling, not a robot. "
-            "The greeting must: (1) say hello warmly, (2) state your name and company, "
-            "(3) include a human opener like 'how are you doing today' or 'hope your day is going well'. "
-            "Examples: "
-            "'Hey, how's it going? This is Tony with Indus Transports.' "
-            "'Hi there — Tony here from Indus Transports, how are you doing today?' "
-            "'Hello? Hey, this is Tony calling from Indus Transports — how are you doing?' "
-            "Under 20 words. Return ONLY the greeting text, no quotes."
+            "The greeting must: (1) say hello warmly, (2) state your name and company briefly, "
+            "(3) add a casual human touch like 'how are things going?' or 'hope your day's going well'. "
+            "Vary the wording each time — do NOT always use the same sentence structure. "
+            "Examples of good variety: "
+            "'Hey, how are you doing? This is Tony calling from Indus Transports.' "
+            "'Hi there — Tony here at Indus Transports, how\'s it going?' "
+            "'Hello, this is Tony with Indus Transports — hope I\'m catching you at a good time.' "
+            "'Hey, good to connect — Tony from Indus Transports here, how are you today?' "
+            "Under 18 words. Return ONLY the greeting text, no quotes, no labels."
         )
-        return self._raw_complete(prompt, max_tokens=60)
+        line = self._raw_complete(prompt, max_tokens=55)
+        # Fallback if LLM returns empty
+        if not line or len(line) < 5:
+            import random
+            fallbacks = [
+                f"Hey, how are you doing? This is {self.agent_name} with {self.company_name}.",
+                f"Hi there — {self.agent_name} here from {self.company_name}, how's it going?",
+                f"Hello, this is {self.agent_name} calling from {self.company_name} — how are you today?",
+            ]
+            line = random.choice(fallbacks)
+        return line
 
     def respond_to(self, prospect_text: str) -> str:
         """
@@ -178,7 +204,7 @@ class ConversationAgent:
         max_turns = _MAX_TURNS_ENGAGED if self._engaged else _MAX_TURNS_DEFAULT
         return (
             self.state.interest_level == "DNC"
-            or self._consecutive_negatives >= 2
+            or self._consecutive_negatives >= _CONSECUTIVE_NEGATIVES_THRESHOLD
             or self._turn_count > max_turns
         )
 
@@ -236,19 +262,27 @@ class ConversationAgent:
         self._system = self._build_system_prompt()
         messages = [{"role": "system", "content": self._system}]
         messages.extend(self._history[-30:])   # long-call memory window plus state summary
-        max_tokens = 65 if self.state.carrier_style == "rushed" else 150
-        temperature = 0.68 if self.state.carrier_style == "skeptical" else 0.78
+        # Shorter max_tokens for rushed carriers reduces latency significantly
+        if self.state.carrier_style == "rushed":
+            max_tokens = 55
+        elif self.state.carrier_style in ("skeptical", "neutral"):
+            max_tokens = 90
+        else:
+            max_tokens = 130
+        temperature = 0.65 if self.state.carrier_style == "skeptical" else 0.75
         try:
             resp = self._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                # top_p for tighter distribution on short answers
+                top_p=0.92,
             )
             return _clean_spoken_text(resp.choices[0].message.content)
         except Exception as exc:
             logger.error("LLM completion error: %s", exc)
-            return "Sorry, could you repeat that?"
+            return "Sorry, could you say that again?"
 
     def _raw_complete(self, user_prompt: str, max_tokens: int = 80) -> str:
         self._system = self._build_system_prompt()

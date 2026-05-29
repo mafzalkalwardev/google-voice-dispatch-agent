@@ -248,9 +248,10 @@ def _has_real_conversation(transcript_text: str) -> bool:
             if len(re.findall(r"[A-Za-z0-9]+", spoken)) >= 1:
                 return True
 
-    # If we don't see labeled turns but there is still some meaningful STT text,
-    # consider it conversation-like.
-    return len(re.findall(r"[A-Za-z0-9]+", transcript_text)) >= 5
+    # If we don't see labeled turns, be conservative and treat as *not* a real
+    # conversation. (This keeps silent/failed calls excluded from Connected Calls.)
+    return False
+
 
 
 
