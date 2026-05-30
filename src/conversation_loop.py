@@ -551,7 +551,21 @@ class ConversationLoop:
 
             self._log_rms_if_due(now, rms, threshold)
 
-            if self.tts.is_speaking() or now < self._capture_suppress_until:
+            if self.tts.is_speaking():
+                if rms >= max(threshold * 2.0, threshold + 0.01):
+                    logger.info(
+                        "[CAPTURE] Barge-in audio while TTS speaking rms=%.4f threshold=%.4f; stopping Tony",
+                        rms,
+                        threshold,
+                    )
+                    self.tts.stop()
+                    self._answer_confirmed.set()
+                    self._capture_suppress_until = time.monotonic() + 0.08
+                self._vad.reset()
+                self._write_diagnostics(vad_detected=False)
+                continue
+
+            if now < self._capture_suppress_until:
                 self._vad.reset()
                 self._write_diagnostics(vad_detected=False)
                 continue
@@ -570,18 +584,20 @@ class ConversationLoop:
             if not self._voicemail_detected and time.monotonic() <= self._voicemail_check_deadline_monotonic:
                 try:
                     label = self._voicemail_detector.process_frame(frame, samplerate=_SAMPLERATE)
-                    if label in ("beep_detected", "voicemail_greeting"):
+                    if label == "beep_detected":
                         self._voicemail_detected = True
-                        logger.info("[VM] Voicemail detected early; stopping conversation loop")
+                        logger.info("[VM] Voicemail beep detected early; stopping conversation loop")
                         if self._session is not None and not self._session.is_terminal():
                             try:
                                 self._session.outcome = "voicemail"
-                                self._session.transition(CallState.VOICEMAIL, "voicemail detected early")
+                                self._session.transition(CallState.VOICEMAIL, "voicemail beep detected early")
                             except ValueError:
                                 # Transition already occurred or illegal; ignore.
                                 pass
                         self.stop()
                         return
+                    if label == "voicemail_greeting":
+                        logger.debug("[VM] Possible voicemail greeting observed; waiting for beep confirmation")
                 except Exception as exc:
                     logger.debug("[VM] detection frame error: %s", exc)
 

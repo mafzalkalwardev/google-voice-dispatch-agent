@@ -12,8 +12,20 @@
   "loopback_device": "CABLE Input",
   "call_timeout": 60,
   "call_max_duration": 90,
+  "answered_speak_delay_seconds": 1.5,
+  "wait_for_human_audio": true,
+  "human_audio_timeout_seconds": 8.0,
+  "answer_confirm_polls": 2,
+  "min_ring_seconds": 0.0,
+  "max_ring_seconds": 45.0,
+  "voicemail_detect_seconds": 15.0,
+  "call_cooldown_seconds": 10.0,
   "capture_device": "default",
   "tts_voice": "en-US-GuyNeural",
   "stt_model": "whisper-large-v3-turbo",
-  "vad_threshold": 0.015
+  "vad_threshold": 0.015,
+  "vad_silence_frames": 12,
+  "vad_speech_frames": 2,
+  "stt_retry_count": 2,
+  "tts_warmup": true
 }

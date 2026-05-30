@@ -74,7 +74,11 @@ _CONFIG_KEYS = [
     "company_name", "company_website", "company_context",
     "groq_model", "loopback_device", "call_timeout", "call_max_duration",
     "capture_device", "tts_voice", "stt_model", "vad_threshold",
-    "vad_silence_frames", "vad_speech_frames", "stt_retry_count", "tts_warmup", "call_cooldown_seconds",
+    "answered_speak_delay_seconds", "wait_for_human_audio",
+    "human_audio_timeout_seconds", "answer_confirm_polls",
+    "min_ring_seconds", "max_ring_seconds", "voicemail_detect_seconds",
+    "vad_silence_frames", "vad_speech_frames", "stt_retry_count",
+    "tts_warmup", "call_cooldown_seconds",
 ]
 
 
@@ -107,6 +111,18 @@ def _load_config() -> dict:
             "tts_voice": cfg.tts_voice,
             "stt_model": cfg.stt_model,
             "vad_threshold": cfg.vad_threshold,
+            "answered_speak_delay_seconds": cfg.answered_speak_delay_seconds,
+            "wait_for_human_audio": cfg.wait_for_human_audio,
+            "human_audio_timeout_seconds": cfg.human_audio_timeout_seconds,
+            "answer_confirm_polls": cfg.answer_confirm_polls,
+            "min_ring_seconds": cfg.min_ring_seconds,
+            "max_ring_seconds": cfg.max_ring_seconds,
+            "voicemail_detect_seconds": cfg.voicemail_detect_seconds,
+            "call_cooldown_seconds": cfg.call_cooldown_seconds,
+            "vad_silence_frames": cfg.vad_silence_frames,
+            "vad_speech_frames": cfg.vad_speech_frames,
+            "stt_retry_count": cfg.stt_retry_count,
+            "tts_warmup": cfg.tts_warmup,
         }
     except Exception:
         merged = {}
@@ -515,17 +531,29 @@ async def api_save_settings(request: Request):
     body = await request.json()
     allowed = {k: v for k, v in body.items() if k in _CONFIG_KEYS}
     # Coerce numeric fields
-    for f in ("call_timeout", "call_max_duration"):
+    for f in (
+        "call_timeout", "call_max_duration", "answer_confirm_polls",
+        "vad_silence_frames", "vad_speech_frames", "stt_retry_count",
+    ):
         if f in allowed:
             try:
                 allowed[f] = int(allowed[f])
             except (ValueError, TypeError):
                 pass
-    if "vad_threshold" in allowed:
-        try:
-            allowed["vad_threshold"] = float(allowed["vad_threshold"])
-        except (ValueError, TypeError):
-            pass
+    for f in (
+        "vad_threshold", "answered_speak_delay_seconds",
+        "human_audio_timeout_seconds", "min_ring_seconds",
+        "max_ring_seconds", "voicemail_detect_seconds",
+        "call_cooldown_seconds",
+    ):
+        if f in allowed:
+            try:
+                allowed[f] = float(allowed[f])
+            except (ValueError, TypeError):
+                pass
+    for f in ("wait_for_human_audio", "tts_warmup"):
+        if f in allowed:
+            allowed[f] = str(allowed[f]).lower() in ("true", "1", "yes", "on")
     _save_config(allowed)
     return {"ok": True, "saved": list(allowed.keys())}
 
@@ -989,6 +1017,8 @@ def main() -> None:
         port=_server_port(),
         reload=False,
         log_level="info",
+        log_config=None,
+        access_log=False,
     )
 
 

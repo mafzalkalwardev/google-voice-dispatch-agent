@@ -82,6 +82,7 @@ def run_console(open_browser: bool = True, port: int = DEFAULT_PORT) -> None:
         reload=False,
         log_level="info",
         log_config=None,
+        access_log=False,
     )
 
 

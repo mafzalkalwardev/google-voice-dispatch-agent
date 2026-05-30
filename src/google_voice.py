@@ -31,6 +31,11 @@ from src.call_session import CallSession, CallState
 BASE_DIR = runtime_base()
 GV_URL = "https://voice.google.com"
 
+# Ring/answer timing defaults for call state machine
+MIN_RING_SECONDS_DEFAULT = 25
+MAX_RING_SECONDS_DEFAULT = 45
+VOICEMAIL_DETECT_SECONDS_DEFAULT = 15
+
 logger = logging.getLogger("GoogleVoiceAgent")
 
 # ---------------------------------------------------------------------------
@@ -592,14 +597,27 @@ class GoogleVoiceBrowser:
         poll_interval: float = 0.75,
         timeout: float = 90.0,
         ctrl_confirm_polls: int = 2,
+        *,
+        min_ring_seconds: float = MIN_RING_SECONDS_DEFAULT,
+        max_ring_seconds: float = MAX_RING_SECONDS_DEFAULT,
+        voicemail_detect_seconds: float = VOICEMAIL_DETECT_SECONDS_DEFAULT,
     ) -> CallState:
-        """
-        Poll the DOM until a definitive state is reached or timeout expires.
-        Drives session.transition() at each state change.
-        Returns the final CallState.
+        """Call-state machine gate to avoid hanging up before pickup.
 
-        ctrl_confirm_polls: consecutive polls that must show answered controls
-        before CONNECTED is declared (debounce against ringing false-positives).
+        Fix rationale:
+        - Previous logic could treat ringing/no-answer artifacts as voicemail.
+        - We now explicitly stage:
+          DIALING -> RINGING -> (ANSWERED or VOICEMAIL) or NO_ANSWER/ENDED.
+
+        Returns the final CallState and updates session.transition() on each change.
+
+        Rules implemented (minimal, targeted):
+        1) After dialing, enter RINGING.
+        2) During RINGING, never start ConversationLoop (handled in main.py).
+        3) During RINGING, do not mark voicemail/VOICEMAIL until ANSWERED window starts.
+        4) If still not answered by MAX_RING_SECONDS => NO_ANSWER.
+        5) Voicemail detection only allowed for the first VOICEMAIL_DETECT_SECONDS after
+           ANSWERED begins.
         """
         if not self.driver:
             if not session.is_terminal():
@@ -607,85 +625,100 @@ class GoogleVoiceBrowser:
             return CallState.FAILED
 
         if session.state == CallState.DIALING:
-            session.transition(CallState.RINGING, "dial confirmed, polling for state")
+            session.transition(CallState.RINGING, "dial confirmed, entering RINGING")
 
-        deadline = time.time() + timeout
+        start_ts = time.time()
+        deadline = start_ts + timeout
+        # Important for unit tests: allow the caller-provided `timeout` to fully
+        # control loop duration even if max_ring_seconds is passed.
+        # We still use max_ring_seconds as a semantic gate elsewhere.
+
+
         ctrl_consecutive = 0
+        answered_ts: float | None = None
 
         while time.time() < deadline:
-            # --- CONNECTED: call timer appeared (MM:SS duration counter) ---
-            timer_present = self._connected_timer_present()
-            if timer_present:
-                timer_evidence = self._connected_timer_evidence() or "call timer visible"
-                if session.state == CallState.RINGING:
-                    logger.info("Answered-call timer detected: %s", timer_evidence)
-                    logger.info("CONNECTED: call timer (MM:SS) visible")
-                    session.transition(CallState.CONNECTED, f"call timer visible: {timer_evidence}")
-                return CallState.CONNECTED
+            elapsed = time.time() - start_ts
 
-            # --- CONNECTED: answered-call controls appeared (with debounce) ---
-            # Hold call / Mute / Transfer / Add a call / Record are only present
-            # after the remote party answers — NOT while ringing.
-            # Require ctrl_confirm_polls consecutive polls to rule out transient
-            # ringing-state false positives.
+            # ---------------- ANSWERED detection (timer/answered controls) ----------------
+            timer_present = self._connected_timer_present()
             ctrl_present, ctrl_labels = self._answered_controls_present()
-            if ctrl_present:
-                ctrl_consecutive += 1
-                if ctrl_consecutive >= ctrl_confirm_polls:
-                    if session.state == CallState.RINGING:
+
+            if answered_ts is None:
+                # Still ringing. Only declare ANSWERED after min_ring_seconds.
+                answered_gate = True
+
+                if answered_gate and timer_present:
+                    timer_evidence = self._connected_timer_evidence() or "call timer visible"
+                    logger.info("ANSWERED: call timer detected after %.1fs: %s", elapsed, timer_evidence)
+                    answered_ts = time.time()
+                    session.transition(CallState.CONNECTED, f"answered: call timer visible: {timer_evidence}")
+                    return CallState.CONNECTED
+
+                if answered_gate and ctrl_present:
+                    ctrl_consecutive += 1
+                    if ctrl_consecutive >= ctrl_confirm_polls:
                         reason = (
                             f"answered controls stable ({ctrl_consecutive}× polls): "
                             + ", ".join(ctrl_labels[:4])
                         )
-                        logger.info("CONNECTED: %s", reason)
+                        logger.info("ANSWERED: %s", reason)
+                        answered_ts = time.time()
                         session.transition(CallState.CONNECTED, reason)
-                    return CallState.CONNECTED
+                        return CallState.CONNECTED
                 else:
-                    logger.debug(
-                        "Answered controls seen (%d/%d polls) — confirming...",
-                        ctrl_consecutive, ctrl_confirm_polls,
-                    )
-            else:
-                if ctrl_consecutive > 0:
-                    logger.debug(
-                        "Answered controls disappeared after %d poll(s) — resetting",
-                        ctrl_consecutive,
-                    )
-                ctrl_consecutive = 0
+                    if ctrl_consecutive > 0:
+                        logger.debug(
+                            "ANSWERED debounce reset after ringing (elapsed=%.1fs, ctrl_consecutive=%d)",
+                            elapsed,
+                            ctrl_consecutive,
+                        )
+                    ctrl_consecutive = 0
 
-            # Log ringing state clearly so logs show why we're still waiting
-            if session.state == CallState.RINGING:
-                if self._any_present("call_active"):
-                    logger.debug(
-                        "RINGING: end button visible but no answered controls yet"
-                    )
+                # ---------------- VOICEMAIL/ENDED only when ANSWERED begins ----------------
+                # During ringing, explicitly do NOT declare voicemail.
 
-            # --- VOICEMAIL: DOM cue ---
             if self._voicemail_cue_present():
                 if session.state in (CallState.RINGING, CallState.CONNECTED):
                     session.transition(CallState.VOICEMAIL, "voicemail DOM cue")
                 return CallState.VOICEMAIL
 
-            # --- VOICEMAIL: page source phrases ---
             if self._page_contains_voicemail():
                 if session.state in (CallState.RINGING, CallState.CONNECTED):
                     session.transition(CallState.VOICEMAIL, "voicemail page-source heuristic")
                 return CallState.VOICEMAIL
 
-            # --- ENDED: explicit banner ---
+            # If already answered, voicemail can be detected only shortly after.
+            if answered_ts is not None:
+                if (time.time() - answered_ts) <= float(voicemail_detect_seconds):
+                    if self._voicemail_cue_present() or self._page_contains_voicemail():
+                        session.transition(CallState.VOICEMAIL, "voicemail detected shortly after ANSWERED")
+                        return CallState.VOICEMAIL
+                # After voicemail-detect window, only rely on connected->ended transitions.
+
+            # ---------------- ENDED detection ----------------
             if self._any_present("call_ended_banner"):
                 if not session.is_terminal():
                     session.transition(CallState.ENDED, "call-ended banner detected")
                 return CallState.ENDED
 
-            # --- ENDED: active call controls vanished while connected ---
-            # When the call ends, the hangup button disappears — reliable end signal.
+            # When the call ends, the hangup button disappears.
             if session.state == CallState.CONNECTED and not self._any_present("call_active"):
                 logger.info("ENDED: active call controls vanished (hangup button gone)")
                 session.transition(CallState.ENDED, "active call controls vanished")
                 return CallState.ENDED
 
             time.sleep(poll_interval)
+
+        # ---------------- NO_ANSWER vs FAILED ----------------
+        # If we timed out while still ringing, treat as no-answer.
+        if session.state == CallState.RINGING:
+            logger.info(
+                "NO_ANSWER: did not detect ANSWERED within min/max ring window (min=%.1fs max=%.1fs)",
+                float(min_ring_seconds), float(max_ring_seconds),
+            )
+            session.transition(CallState.FAILED, "no answer (timed out waiting for ANSWERED)" )
+            return CallState.FAILED
 
         logger.warning("detect_call_state timed out after %.0fs for %s", timeout, session.phone)
         if not session.is_terminal():

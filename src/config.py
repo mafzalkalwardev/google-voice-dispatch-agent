@@ -40,6 +40,10 @@ _DEFAULTS = {
     "wait_for_human_audio": True,         # listen for inbound audio before speaking
     "human_audio_timeout_seconds": 8.0,   # max seconds to listen before speaking anyway
     "answer_confirm_polls": 2,            # consecutive DOM polls required to confirm CONNECTED
+    "min_ring_seconds": 0.0,              # keep 0: real answer controls/timer are stronger than elapsed time
+    "max_ring_seconds": 45.0,             # stop waiting for no-answer calls after this window
+    "voicemail_detect_seconds": 15.0,     # active voicemail cue window after answer evidence
+    "call_cooldown_seconds": 10.0,        # pause between live calls
     # VAD tuning — operators can adjust from Settings page
     "vad_silence_frames": 12,             # frames of silence before utterance ends (12×30ms=360ms)
     "vad_speech_frames": 2,               # frames of speech required to start utterance
@@ -127,6 +131,18 @@ class Config:
         )
         self.answer_confirm_polls: int = int(
             os.getenv("ANSWER_CONFIRM_POLLS", j.get("answer_confirm_polls", _DEFAULTS["answer_confirm_polls"]))
+        )
+        self.min_ring_seconds: float = float(
+            os.getenv("MIN_RING_SECONDS", j.get("min_ring_seconds", _DEFAULTS["min_ring_seconds"]))
+        )
+        self.max_ring_seconds: float = float(
+            os.getenv("MAX_RING_SECONDS", j.get("max_ring_seconds", _DEFAULTS["max_ring_seconds"]))
+        )
+        self.voicemail_detect_seconds: float = float(
+            os.getenv("VOICEMAIL_DETECT_SECONDS", j.get("voicemail_detect_seconds", _DEFAULTS["voicemail_detect_seconds"]))
+        )
+        self.call_cooldown_seconds: float = float(
+            os.getenv("CALL_COOLDOWN_SECONDS", j.get("call_cooldown_seconds", _DEFAULTS["call_cooldown_seconds"]))
         )
         self.vad_silence_frames: int = int(
             os.getenv("VAD_SILENCE_FRAMES", j.get("vad_silence_frames", _DEFAULTS["vad_silence_frames"]))

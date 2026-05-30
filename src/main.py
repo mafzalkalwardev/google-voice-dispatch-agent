@@ -18,6 +18,7 @@ from src.logger import setup_logger
 from src.tts import save_text_to_speech, ensure_audio_dir
 from src.voice_playback import play_wav_loopback, find_playable_loopback_device, print_devices
 from src.paths import runtime_base
+from src.audio_routing import safe_capture_hint
 
 BASE_DIR = runtime_base()
 
@@ -160,6 +161,10 @@ def _run_call(
     stt_retry_count: int = 2,
     vad_silence_frames: int = 12,
     vad_speech_frames: int = 2,
+    min_ring_seconds: float = 0.0,
+    max_ring_seconds: float = 45.0,
+    voicemail_detect_seconds: float = 15.0,
+    tts_warmup: bool = True,
 ) -> None:
     phone = contact["phone"]
     name = contact["name"]
@@ -182,19 +187,6 @@ def _run_call(
         script_text_path = script_path.with_suffix(".txt")
         script_text_path.write_text(script_text, encoding="utf-8")
         save_text_to_speech(script_text, script_path)
-    else:
-        opening_line = _generate_realtime_opening_line(
-            contact_name=name,
-            groq_api_key=groq_api_key,
-            groq_model=ai.model,
-            agent_name=agent_name,
-            company_name=company_name,
-            company_context=company_context,
-            company_website=company_website,
-            callback_number=callback_number,
-            logger=logger,
-            index=index,
-        )
 
     voicemail_text = ai.generate_voicemail(
         contact_name=name,
@@ -267,6 +259,9 @@ def _run_call(
         session,
         timeout=float(call_timeout),
         ctrl_confirm_polls=answer_confirm_polls,
+        min_ring_seconds=min_ring_seconds,
+        max_ring_seconds=max_ring_seconds,
+        voicemail_detect_seconds=voicemail_detect_seconds,
     )
 
     if final_state == CallState.CONNECTED:
@@ -297,6 +292,7 @@ def _run_call(
                 stt_retry_count=stt_retry_count,
                 vad_silence_frames=vad_silence_frames,
                 vad_speech_frames=vad_speech_frames,
+                tts_warmup=tts_warmup,
             )
         else:
             logger.info("[%d] Call connected — playing script audio", index)
@@ -508,6 +504,7 @@ def _run_realtime_loop(
     stt_retry_count: int = 2,
     vad_silence_frames: int = 12,
     vad_speech_frames: int = 2,
+    tts_warmup: bool = True,
 ) -> None:
     from src.conversation_agent import ConversationAgent
     from src.conversation_loop import ConversationLoop
@@ -529,7 +526,11 @@ def _run_realtime_loop(
         validate_tts_output_device(loopback_device_index)
         logger.info("Realtime selected output device: %s", describe_audio_device(loopback_device_index))
         logger.info("Realtime selected capture device: CAPTURE_DEVICE='%s'", capture_device)
-        tts = RealtimeTTS(device_index=loopback_device_index, voice=tts_voice)
+        tts = RealtimeTTS(
+            device_index=loopback_device_index,
+            voice=tts_voice,
+            use_cache=tts_warmup,
+        )
         agent = ConversationAgent(
             api_key=groq_api_key,
             model=groq_model,
@@ -848,7 +849,7 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
     company_website = cfg.company_website
     call_timeout    = args.call_timeout or cfg.call_timeout
     call_max_duration = args.call_max_duration or cfg.call_max_duration
-    capture_device  = args.capture_device or cfg.capture_device
+    capture_device  = safe_capture_hint(args.capture_device or cfg.capture_device, loopback_device)
     tts_voice       = args.tts_voice or cfg.tts_voice
 
     if not callback_number:
@@ -912,6 +913,10 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
             stt_retry_count=cfg.stt_retry_count,
             vad_silence_frames=cfg.vad_silence_frames,
             vad_speech_frames=cfg.vad_speech_frames,
+            min_ring_seconds=getattr(cfg, "min_ring_seconds", 0.0),
+            max_ring_seconds=getattr(cfg, "max_ring_seconds", 45.0),
+            voicemail_detect_seconds=getattr(cfg, "voicemail_detect_seconds", 15.0),
+            tts_warmup=cfg.tts_warmup,
         )
     finally:
         browser.close()
@@ -955,7 +960,7 @@ def main() -> None:
     company_website = cfg.company_website
     call_timeout = args.call_timeout or cfg.call_timeout
     call_max_duration = args.call_max_duration or cfg.call_max_duration
-    capture_device = args.capture_device or cfg.capture_device
+    capture_device = safe_capture_hint(args.capture_device or cfg.capture_device, loopback_device)
     tts_voice = args.tts_voice or cfg.tts_voice
 
     if not callback_number:
@@ -1014,9 +1019,13 @@ def main() -> None:
                 wait_for_human_audio=cfg.wait_for_human_audio,
                 human_audio_timeout=cfg.human_audio_timeout_seconds,
                 answer_confirm_polls=cfg.answer_confirm_polls,
-            stt_retry_count=cfg.stt_retry_count,
-            vad_silence_frames=cfg.vad_silence_frames,
-            vad_speech_frames=cfg.vad_speech_frames,
+                stt_retry_count=cfg.stt_retry_count,
+                vad_silence_frames=cfg.vad_silence_frames,
+                vad_speech_frames=cfg.vad_speech_frames,
+                min_ring_seconds=getattr(cfg, "min_ring_seconds", 0.0),
+                max_ring_seconds=getattr(cfg, "max_ring_seconds", 45.0),
+                voicemail_detect_seconds=getattr(cfg, "voicemail_detect_seconds", 15.0),
+                tts_warmup=cfg.tts_warmup,
             )
         logger.info("Dry run complete. Audio files in %s/", output_dir)
         return
@@ -1039,7 +1048,7 @@ def main() -> None:
 
     logger.info("Logged in. Starting call loop (%d contacts).", min(len(contacts), args.limit))
 
-    call_cooldown_seconds = float(getattr(cfg, "call_cooldown_seconds", 10.0))
+    call_cooldown_seconds = float(cfg.call_cooldown_seconds)
 
     try:
         for i, contact in enumerate(contacts[: args.limit], start=1):
@@ -1067,9 +1076,13 @@ def main() -> None:
                     wait_for_human_audio=cfg.wait_for_human_audio,
                     human_audio_timeout=cfg.human_audio_timeout_seconds,
                     answer_confirm_polls=cfg.answer_confirm_polls,
-            stt_retry_count=cfg.stt_retry_count,
-            vad_silence_frames=cfg.vad_silence_frames,
-            vad_speech_frames=cfg.vad_speech_frames,
+                    stt_retry_count=cfg.stt_retry_count,
+                    vad_silence_frames=cfg.vad_silence_frames,
+                    vad_speech_frames=cfg.vad_speech_frames,
+                    min_ring_seconds=getattr(cfg, "min_ring_seconds", 0.0),
+                    max_ring_seconds=getattr(cfg, "max_ring_seconds", 45.0),
+                    voicemail_detect_seconds=getattr(cfg, "voicemail_detect_seconds", 15.0),
+                    tts_warmup=cfg.tts_warmup,
                 )
             except WebDriverException as exc:
                 logger.error("Chrome/Google Voice session ended; stopping call loop: %s", exc)
