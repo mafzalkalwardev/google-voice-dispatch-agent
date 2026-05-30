@@ -76,6 +76,7 @@ class ConversationLoop:
         realtime_debug: bool = True,
         diagnostics_path: Optional[Path] = None,
         capture_factory: Optional[Callable[..., AudioCapture]] = None,
+        voicemail_detect_seconds: float = 15.0,
     ):
         self.capture_device_hint = capture_device_hint
         self.tts = tts
@@ -141,6 +142,7 @@ class ConversationLoop:
         # Voicemail detection (first N seconds after call connect)
         self._voicemail_detector = VoicemailAudioClassifier(samplerate=_SAMPLERATE)
 
+        self._voicemail_detect_seconds = max(0.0, float(voicemail_detect_seconds))
         self._voicemail_check_deadline_monotonic = 0.0
         self._voicemail_detected = False
 
@@ -167,7 +169,9 @@ class ConversationLoop:
 
         # Reset voicemail detection window for this call.
         self._voicemail_detector.reset()
-        self._voicemail_check_deadline_monotonic = self._last_speech_activity + 15.0
+        self._voicemail_check_deadline_monotonic = (
+            self._last_speech_activity + self._voicemail_detect_seconds
+        )
         self._voicemail_detected = False
 
         self._next_silence_log = self._last_speech_activity + self._max_silence_seconds

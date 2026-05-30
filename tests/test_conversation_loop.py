@@ -107,6 +107,18 @@ def test_no_opening_line_when_auto_opening_false():
         mock_tts.speak.assert_not_called()
 
 
+def test_voicemail_detection_window_is_configurable():
+    loop, _, _, _ = _make_loop()
+    loop._voicemail_detect_seconds = 3.5
+    loop._last_speech_activity = time.monotonic()
+    loop._voicemail_detector.reset()
+
+    started = loop._last_speech_activity
+    loop._voicemail_check_deadline_monotonic = started + loop._voicemail_detect_seconds
+
+    assert loop._voicemail_check_deadline_monotonic == pytest.approx(started + 3.5)
+
+
 def test_takeover_pauses_ai():
     loop, mock_tts, _, _ = _make_loop()
     loop._handle_takeover()

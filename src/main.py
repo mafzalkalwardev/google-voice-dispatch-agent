@@ -283,7 +283,10 @@ def _run_call(
                 stt_model=stt_model,
                 vad_threshold=vad_threshold,
                 opening_line=opening_line,
+                voicemail_path=voicemail_path,
                 browser=browser,
+                loopback_device=loopback_device,
+                loopback_available=loopback_available,
                 call_max_duration=call_max_duration,
                 logger=logger,
                 answered_speak_delay=answered_speak_delay,
@@ -292,6 +295,7 @@ def _run_call(
                 stt_retry_count=stt_retry_count,
                 vad_silence_frames=vad_silence_frames,
                 vad_speech_frames=vad_speech_frames,
+                voicemail_detect_seconds=voicemail_detect_seconds,
                 tts_warmup=tts_warmup,
             )
         else:
@@ -495,7 +499,10 @@ def _run_realtime_loop(
     stt_model: str,
     vad_threshold: float,
     opening_line: str | None,
+    voicemail_path: Path,
     browser: GoogleVoiceBrowser,
+    loopback_device: str,
+    loopback_available: bool,
     call_max_duration: int,
     logger: logging.Logger,
     answered_speak_delay: float = 4.0,
@@ -504,6 +511,7 @@ def _run_realtime_loop(
     stt_retry_count: int = 2,
     vad_silence_frames: int = 12,
     vad_speech_frames: int = 2,
+    voicemail_detect_seconds: float = 15.0,
     tts_warmup: bool = True,
 ) -> None:
     from src.conversation_agent import ConversationAgent
@@ -558,6 +566,7 @@ def _run_realtime_loop(
             answered_speak_delay=answered_speak_delay,
             wait_for_human_audio=wait_for_human_audio,
             human_audio_timeout=human_audio_timeout,
+            voicemail_detect_seconds=voicemail_detect_seconds,
         )
         logger.info("Transcript will be saved to: %s", transcript_path)
         logger.info("Recording will be saved to: %s", recording_path)
@@ -587,6 +596,19 @@ def _run_realtime_loop(
     finally:
         monitor_stop.set()
         monitor.join(timeout=2.0)
+        if session.state == CallState.VOICEMAIL:
+            logger.info("Realtime voicemail detected; playing voicemail audio: %s", voicemail_path)
+            if browser.is_call_active():
+                if _play_audio(voicemail_path, loopback_device, loopback_available, logger):
+                    browser.hangup_call()
+                    if not session.is_terminal():
+                        session.transition(CallState.ENDED, "hung up after realtime voicemail playback")
+                else:
+                    browser.hangup_call()
+                    session.transition(CallState.FAILED, "realtime voicemail audio playback failed")
+            elif not session.is_terminal():
+                session.transition(CallState.ENDED, "voicemail detected but Google Voice call ended")
+            return
         if not session.is_terminal():
             if browser.is_call_active():
                 browser.hangup_call()

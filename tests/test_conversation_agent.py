@@ -213,6 +213,22 @@ def test_respond_to_handles_api_error(mock_groq):
     assert len(reply) > 0  # fallback phrase
 
 
+def test_respond_to_retries_rate_limit(mock_groq):
+    _, mock_client = mock_groq
+    mock_client.chat.completions.create.side_effect = [
+        Exception("429 rate limit"),
+        _make_completion("What equipment are you running?"),
+    ]
+    from src.conversation_agent import ConversationAgent
+    with patch("src.conversation_agent.time.sleep") as mock_sleep:
+        agent = ConversationAgent(api_key="test_key")
+        reply = agent.respond_to("Hello")
+
+    assert reply == "What equipment are you running?"
+    assert mock_client.chat.completions.create.call_count == 2
+    mock_sleep.assert_called_once_with(1.0)
+
+
 def test_history_limited_to_rolling_window(mock_groq):
     _, mock_client = mock_groq
     mock_client.chat.completions.create.return_value = _make_completion("ok")

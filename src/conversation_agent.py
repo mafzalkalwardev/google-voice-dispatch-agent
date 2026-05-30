@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 
 from groq import Groq
@@ -290,7 +291,7 @@ class ConversationAgent:
             max_tokens = 130
         temperature = 0.65 if self.state.carrier_style == "skeptical" else 0.75
         try:
-            resp = self._client.chat.completions.create(
+            resp = self._chat_complete_with_backoff(
                 model=self.model,
                 messages=messages,
                 max_tokens=max_tokens,
@@ -306,7 +307,7 @@ class ConversationAgent:
     def _raw_complete(self, user_prompt: str, max_tokens: int = 80) -> str:
         self._system = self._build_system_prompt()
         try:
-            resp = self._client.chat.completions.create(
+            resp = self._chat_complete_with_backoff(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": self._system},
@@ -319,3 +320,33 @@ class ConversationAgent:
         except Exception as exc:
             logger.error("LLM raw completion error: %s", exc)
             return ""
+
+    def _chat_complete_with_backoff(self, **kwargs):
+        delays = (1.0, 2.0, 4.0)
+        last_exc: Exception | None = None
+        for attempt in range(1, len(delays) + 2):
+            try:
+                return self._client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc).lower()
+                is_rate_limited = (
+                    "429" in msg
+                    or "rate limit" in msg
+                    or "rate-limited" in msg
+                    or "too many requests" in msg
+                    or "rate_limit" in msg
+                )
+                if not is_rate_limited or attempt > len(delays):
+                    break
+                delay_s = delays[attempt - 1]
+                logger.warning(
+                    "Realtime Groq rate limited (attempt %d/%d). Backing off %.1fs. Error: %s",
+                    attempt,
+                    len(delays) + 1,
+                    delay_s,
+                    exc,
+                )
+                time.sleep(delay_s)
+        assert last_exc is not None
+        raise last_exc
