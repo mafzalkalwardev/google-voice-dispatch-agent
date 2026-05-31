@@ -1,77 +1,193 @@
-# GoogleVoiceAgent-Active
+<div align="center">
 
-Live AI calling agent for Google Voice. It opens Google Voice in Chrome, dials contacts from a local CRM file, waits for real call evidence, speaks through a virtual audio cable, listens to the call audio, transcribes speech, generates replies with Groq, and writes call results back to logs.
+# Google Voice Dispatch Agent
 
-This project is built as a practical console-first automation tool. A FastAPI web console is included for monitoring and configuration, but the main operating path is still the CLI.
+<img src="https://readme-typing-svg.demolab.com?font=Inter&weight=700&size=28&duration=2800&pause=700&color=0EA5E9&center=true&vCenter=true&width=900&lines=Live+AI+Google+Voice+Calling+Console;Realtime+STT+%2B+LLM+%2B+TTS+Outbound+Agent;Windows+Desktop+App+%2B+FastAPI+Operator+Console;Built+for+careful+24%2F7+calling+workflows" alt="Typing SVG" />
 
-## Important Notice
+<p>
+  <img src="https://komarev.com/ghpvc/?username=mafzalkalwardev&label=Project%20Views&color=0ea5e9&style=for-the-badge" alt="Project views" />
+  <img src="https://img.shields.io/github/stars/mafzalkalwardev/google-voice-dispatch-agent?style=for-the-badge&color=22c55e" alt="GitHub stars" />
+  <img src="https://img.shields.io/github/forks/mafzalkalwardev/google-voice-dispatch-agent?style=for-the-badge&color=f59e0b" alt="GitHub forks" />
+  <img src="https://img.shields.io/github/license/mafzalkalwardev/google-voice-dispatch-agent?style=for-the-badge&color=64748b" alt="License" />
+</p>
 
-This software can place real phone calls. You are responsible for consent, caller-ID rules, Do Not Call rules, recording disclosure, spam prevention, local law, carrier terms, Google Voice terms, and any business compliance requirements. Test only with numbers you own or have permission to call.
+<p>
+  <img src="https://skillicons.dev/icons?i=python,fastapi,selenium,powershell,html,css,js,githubactions,windows" alt="Skill icons" />
+</p>
 
-Google Voice is not a carrier-grade outbound calling API. For 24/7 production calling, expect browser session expiry, rate limits, UI changes, audio-device drift, and account risk if calls are too frequent or too repetitive.
+<p>
+  <strong>AI outbound calling automation, Google Voice browser control, realtime speech, CRM logging, and Windows app packaging.</strong>
+</p>
 
-## What It Does
+</div>
 
-- Uses Selenium to control the Google Voice web app.
-- Uses Chrome profile persistence so Google login can survive across runs.
-- Dials contacts from CSV/CRM data.
-- Waits for actual connected-call evidence before the AI speaks.
-- Tracks call state with `CallState`: ringing, connected, voicemail, ended, failed.
-- Supports realtime voice conversation using STT, LLM, and TTS.
-- Detects voicemail after connection using DOM cues and audio classifier evidence.
-- Can leave a voicemail message when voicemail is confirmed.
-- Logs call outcomes, transcripts, diagnostics, and CRM updates.
-- Includes a web console for settings, CRM review, logs, and manual controls.
+---
 
-## Current Ringing Safety
+## Project Showcase
 
-The call-state logic is intentionally conservative:
+Google Voice Dispatch Agent is a Windows-first live calling system that turns Google Voice into an AI-assisted outbound call console. It controls Google Voice in Chrome, dials contacts, waits for real answer evidence, speaks through a virtual audio cable, listens to call audio, transcribes speech, generates replies with Groq, and writes outcomes back to logs and CRM files.
 
-- Ringing does not instantly end just because a page banner appears.
-- `min_ring_seconds` is respected before accepting connected, ended, or voicemail transitions.
-- Voicemail DOM cues are ignored while the call is still only ringing.
-- Connected state requires real evidence, such as call timer or active call controls.
-- The AI opening line is only played after the call is confirmed connected.
-- Silence during ringing does not end the call when `silence_does_not_end_call=True`.
-- `max_ring_seconds` ends the attempt as no answer only after the configured ring window.
+It can run as a console app, a FastAPI operator console, or a packaged Windows EXE with Desktop and Startup shortcuts.
 
-Detailed state logs include the current state, elapsed ringing time, DOM cues, audio classifier result, and timeout reason.
+> Compliance note: this project can place real calls. You are responsible for consent, caller-ID rules, Do Not Call compliance, recording disclosure, spam prevention, local law, Google Voice terms, and carrier/account limits.
+
+---
+
+## Trophy Cards
+
+<div align="center">
+  <img src="https://github-profile-trophy.vercel.app/?username=mafzalkalwardev&theme=algolia&no-frame=true&no-bg=true&margin-w=12&margin-h=12&column=4" alt="GitHub trophy cards" />
+</div>
+
+---
+
+## Stats Cards
+
+<div align="center">
+  <img height="165" src="https://github-readme-stats.vercel.app/api?username=mafzalkalwardev&show_icons=true&theme=tokyonight&hide_border=true&rank_icon=github" alt="GitHub stats" />
+  <img height="165" src="https://github-readme-stats.vercel.app/api/top-langs/?username=mafzalkalwardev&layout=compact&theme=tokyonight&hide_border=true" alt="Top languages" />
+</div>
+
+---
+
+## Activity Graph
+
+<div align="center">
+  <img src="https://github-readme-activity-graph.vercel.app/graph?username=mafzalkalwardev&theme=react-dark&hide_border=true&area=true" alt="GitHub activity graph" />
+</div>
+
+---
+
+## Contribution Snake
+
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mafzalkalwardev/google-voice-dispatch-agent/output/github-contribution-grid-snake-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/mafzalkalwardev/google-voice-dispatch-agent/output/github-contribution-grid-snake.svg">
+    <img alt="Contribution snake" src="https://raw.githubusercontent.com/mafzalkalwardev/google-voice-dispatch-agent/output/github-contribution-grid-snake.svg">
+  </picture>
+</div>
+
+---
+
+## SEO Keywords
+
+`AI calling agent` `Google Voice automation` `outbound call automation` `realtime voice AI` `FastAPI call console` `Selenium Google Voice bot` `Groq voice assistant` `Python call center automation` `Windows desktop AI app` `VB-CABLE voice routing` `AI dispatcher assistant` `CRM call logging` `voicemail detection` `speech to text calling agent` `text to speech phone agent`
+
+---
+
+## Core Capabilities
+
+- Browser automation for Google Voice using Selenium and persistent Chrome profiles.
+- Live call-state detection with conservative ringing, connected, ended, failed, and voicemail transitions.
+- Realtime speech capture with VAD, STT, LLM response generation, and TTS playback.
+- Voicemail detection through DOM cues plus early-call audio classifier diagnostics.
+- Pre-generated opening line and voicemail audio assets before dialing.
+- Call logs, transcripts, recordings, connected-call archive, failed-call archive, and CRM enrichment.
+- FastAPI web console for settings, preflight, audio tools, live runs, logs, recordings, leads, and carrier CRM.
+- Windows EXE build with PyInstaller.
+- Desktop shortcut and Windows Startup shortcut installer.
+- Automated tests for state handling, mock dialing, CRM, audio helpers, web routes, and realtime loop behavior.
+
+---
+
+## Why This Exists
+
+Most outbound AI voice demos assume a telephony API. This project is different: it works around the practical reality of Google Voice running in a browser. That means the hard parts are not only AI responses. The hard parts are state detection, browser DOM drift, audio routing, ringing safety, voicemail timing, and long-running operational reliability.
+
+The project is designed around those real-world constraints:
+
+- Never speak until the call is actually connected.
+- Never treat immediate DOM noise as a completed call.
+- Respect a minimum ringing duration.
+- Detect voicemail only after connected/greeting evidence.
+- Keep full logs so every call can be audited.
+- Provide preflight checks before live dialing.
+
+---
+
+## Current Call-State Safety
+
+The most important production fix is the conservative call-state gate in `src/google_voice.py`.
+
+Current behavior:
+
+- Ringing cannot instantly transition to ended.
+- `min_ring_seconds` must pass before accepting connected, ended, or voicemail transitions.
+- Active call controls seen too early are logged and held in ringing.
+- Stale ended banners are ignored during the minimum ringing window.
+- Voicemail page/DOM cues are ignored while still ringing.
+- Connected state waits for stable evidence such as answered controls or call timer signals.
+- The AI opening line starts only after confirmed connection.
+- `max_ring_seconds` ends the attempt as no answer only after the configured ring timeout.
+- Logs include current state, elapsed ringing time, DOM cues, answered controls, call-active status, voicemail cues, audio classifier result, and timeout reason.
+
+---
 
 ## Architecture
 
-Core files:
+```text
+GoogleVoiceAgent-Active/
+  src/
+    main.py                  CLI runner, safe test, batch calling
+    google_voice.py          Selenium Google Voice automation and call-state detection
+    call_session.py          Call session model and CallState transitions
+    conversation_loop.py     Realtime capture, VAD, STT, LLM, TTS, voicemail handoff
+    voicemail_detector.py    Audio classifier for greeting/beep/live-call signals
+    ai_groq.py               Groq-backed AI response behavior
+    realtime_tts.py          Edge TTS playback and cache integration
+    audio_capture.py         Input capture and VAD framing
+    audio_routing.py         Windows audio-device discovery and playback routing
+    crm.py                   Carrier CRM, connected call archive, transcripts, recordings
+    web_app.py               FastAPI operator console and API routes
+    desktop_app.py           PyInstaller app entrypoint
+  tests/                     Automated test suite
+  scripts/                   Build and shortcut installers
+  packaging/                 PyInstaller spec
+  installer/                 Optional Inno Setup installer config
+```
 
-- `src/main.py` - CLI entry point, batch runner, safe test mode, preflight, and call orchestration.
-- `src/google_voice.py` - Google Voice browser automation and call-state detection.
-- `src/call_session.py` - call state/session model.
-- `src/conversation_loop.py` - realtime audio capture, VAD/silence handling, STT, LLM reply flow, and TTS playback.
-- `src/voicemail_detector.py` - audio-based voicemail/greeting classifier.
-- `src/agent_core.py` - AI response generation and conversation behavior.
-- `src/config.py` - environment and JSON configuration loading.
-- `src/web_app.py` - FastAPI web console and settings routes.
-- `tests/` - automated tests for state handling, mock dialing, CRM, config, and audio helpers.
+High-level runtime flow:
 
-High-level flow:
+1. Load `.env`, `dialer_config.json`, contacts, and CRM data.
+2. Run preflight checks for Groq, Chrome profile, contacts, callback number, and audio devices.
+3. Launch Google Voice with the configured Chrome profile.
+4. Prepare opening line and voicemail audio before dialing.
+5. Dial one contact.
+6. Poll `detect_call_state()` until connected, voicemail, no answer, ended, or failed.
+7. Start the realtime conversation loop only after confirmed connection.
+8. Detect voicemail during the early connected-call window and hand off to voicemail playback when confirmed.
+9. Save call logs, transcript, recording, CRM update, and call archive.
+10. Apply cooldown and continue to the next contact.
 
-1. Load `.env`, `dialer_config.json`, and CRM/contact data.
-2. Run preflight checks for API keys, Chrome profile, contacts, and audio devices.
-3. Open Google Voice with the configured Chrome profile.
-4. Dial one contact.
-5. Poll `detect_call_state()` until connected, voicemail, no answer, ended, or failed.
-6. If connected, start `ConversationLoop`.
-7. If voicemail is confirmed, play configured voicemail message.
-8. Write logs, transcripts, status, and CRM updates.
-9. Cool down, then continue to the next contact.
+---
+
+## Tech Stack
+
+| Layer | Tools |
+|---|---|
+| Language | Python |
+| Web console | FastAPI, Jinja2, HTML, CSS, JavaScript |
+| Browser automation | Selenium, webdriver-manager, Google Chrome |
+| AI provider | Groq |
+| Speech/TTS | Groq STT, Edge TTS, pyttsx3 fallback |
+| Audio routing | VB-CABLE, sounddevice, soundcard, soundfile |
+| Data | CSV/XLSX contacts, JSON config, local CRM artifacts |
+| Desktop packaging | PyInstaller, PowerShell |
+| CI/testing | pytest, GitHub Actions |
+
+---
 
 ## Requirements
 
-- Windows recommended.
-- Python 3.10+.
+- Windows 10/11 recommended.
+- Python 3.10+ for source runs.
 - Google Chrome.
-- A Google Voice account already logged in through the configured Chrome profile.
-- VB-CABLE or equivalent virtual audio device.
+- Google Voice account logged in through the configured Chrome profile.
+- VB-CABLE or similar virtual audio device.
 - Groq API key.
-- Microphone/audio routing configured so Chrome can receive the TTS audio and the agent can capture call audio.
+- Contacts file or CRM data.
+- A callback number configured in Google Voice when required by the account.
 
 Install dependencies:
 
@@ -88,16 +204,19 @@ Copy-Item dialer_config.example.json dialer_config.json
 
 Then edit `.env` and `dialer_config.json`.
 
-## Key Configuration
+---
+
+## Configuration
 
 Common `.env` values:
 
 ```env
 GROQ_API_KEY=your_key_here
 GOOGLE_VOICE_URL=https://voice.google.com/u/0/calls
-CHROME_PROFILE_DIR=C:\Users\you\AppData\Local\Google\Chrome\User Data\GoogleVoiceAgent
+CHROME_PROFILE_DIR=chrome_profiles/sales_profile
 PLAYBACK_DEVICE=CABLE Input
 CAPTURE_DEVICE=default
+CALLBACK_NUMBER=your_callback_number
 ```
 
 Common `dialer_config.json` values:
@@ -116,24 +235,26 @@ Common `dialer_config.json` values:
 }
 ```
 
-For 24/7 calling, keep `min_ring_seconds` above zero and use a cooldown between calls. Do not run rapid retry loops against Google Voice.
+For 24/7 calling, keep `min_ring_seconds` above zero, use a cooldown, and do not rapid-fire failed numbers.
 
-## Audio Setup
+---
+
+## Audio Routing
 
 Minimum VB-CABLE setup:
 
-- Set the agent playback device to `CABLE Input`.
-- Set Chrome microphone input to `CABLE Output`.
-- Let Chrome speaker output play the call audio to a device the agent can capture.
+- Agent playback device: `CABLE Input`.
+- Chrome microphone input: `CABLE Output`.
+- Chrome speaker output: a device the agent can capture.
 
-Recommended 24/7 setup:
+Recommended unattended setup:
 
-- Use separate virtual routes for TTS output and call capture.
+- Use separate routes for agent TTS and inbound call capture.
 - Avoid capturing the same speaker output that plays the agent voice.
-- Keep Windows default devices stable and disable unused audio devices if they cause drift.
-- Run `--list-audio-devices` after every driver or Windows audio change.
+- Keep Windows default audio devices stable.
+- Re-run audio discovery after Windows updates or driver changes.
 
-Commands:
+Useful commands:
 
 ```powershell
 python -m src.main --list-audio-devices
@@ -141,9 +262,11 @@ python -m src.main --audio-route-test
 python -m src.main --preflight
 ```
 
-If `CAPTURE_DEVICE=default`, Windows WASAPI loopback may capture the agent's own TTS voice. That can create echo/self-transcription. A proper dual-route setup is strongly recommended for unattended operation.
+Important: `CAPTURE_DEVICE=default` uses Windows speaker loopback. It works for testing, but for nonstop calling a dedicated capture route is more reliable because it reduces echo and self-transcription risk.
 
-## Console Commands
+---
+
+## Run From Source
 
 Preflight:
 
@@ -151,28 +274,10 @@ Preflight:
 python -m src.main --preflight
 ```
 
-List audio devices:
-
-```powershell
-python -m src.main --list-audio-devices
-```
-
-Run a safe one-number test:
+Safe one-number live test:
 
 ```powershell
 python -m src.main --safe-test +15551234567
-```
-
-Diagnose current Google Voice call state:
-
-```powershell
-python -m src.main --diagnose-call-state
-```
-
-Dry run without dialing:
-
-```powershell
-python -m src.main --dry-run
 ```
 
 Start normal calling:
@@ -187,17 +292,23 @@ Start the web console:
 python -m src.web_app
 ```
 
-Then open the local URL printed by FastAPI.
+Open:
 
-## Run It Like A Windows App
+```text
+http://127.0.0.1:8000/run
+```
 
-Build the desktop EXE:
+---
+
+## Run Like A Windows App
+
+Build the EXE:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1
 ```
 
-For a faster rebuild after tests already passed:
+Fast rebuild after tests already passed:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1 -SkipTests
@@ -208,62 +319,66 @@ Build outputs:
 - `dist\IndusDispatchConsole.exe`
 - `release\IndusDispatchConsole-portable.zip`
 
-Install desktop and Windows Startup shortcuts:
+Install Desktop and Windows Startup shortcuts:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install_windows_shortcuts.ps1
 ```
 
-The Desktop shortcut opens the operator console at `http://127.0.0.1:8000/run`.
-The Startup shortcut launches the console automatically when Windows signs in.
-
-To start the app manually:
+Manual app launch:
 
 ```powershell
 .\dist\IndusDispatchConsole.exe
 ```
 
-To run on another port:
+Custom port:
 
 ```powershell
 .\dist\IndusDispatchConsole.exe --port 8787
 ```
 
-To start at login without opening the browser immediately:
+Startup without opening the browser immediately:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install_windows_shortcuts.ps1 -StartupNoBrowser
 ```
 
+---
+
 ## Web Console
 
-The web console is useful for operations, not required for the console app.
+The FastAPI console provides operational pages for:
 
-Typical areas:
+- Live run control.
+- Preflight checks.
+- Settings.
+- Contacts upload/review.
+- Audio diagnostics.
+- Logs.
+- Leads.
+- Recordings.
+- Connected calls.
+- Carrier CRM.
 
-- Dashboard/status page.
-- Settings editor.
-- Contact/CRM review.
-- Logs and transcripts.
-- Manual call/test actions.
+Primary API and page routes live in `src/web_app.py`.
 
-The backend routes are defined in `src/web_app.py`. Static assets and templates live under the web/static/template folders used by that module.
+---
 
 ## Testing
 
-Run the full test suite:
+Run the full suite:
 
 ```powershell
 python -m pytest tests -q
 ```
 
-Optional compile check:
+Compile check:
 
 ```powershell
 python -m compileall src tests
 ```
 
-Recommended before a live calling session:
+Recommended before live calling:
 
 ```powershell
 python -m src.main --preflight
@@ -271,104 +386,130 @@ python -m src.main --safe-test +15551234567
 python -m pytest tests -q
 ```
 
-## Logs And Runtime Files
+Current local verification:
 
-Runtime output is written under project log/output folders such as:
+```text
+231 tests passed
+Packaged EXE served /run with HTTP 200
+Desktop and Startup shortcuts installed successfully
+```
 
+---
+
+## Logs And Runtime Data
+
+Runtime files are intentionally not committed:
+
+- `.env`
+- `dialer_config.json`
 - `logs/`
 - `connected_calls/`
 - `failed_calls/`
 - `voicemail_calls/`
-- `recordings/`
-- generated TTS/audio files
+- `audio/voicemails/`
+- `audio/scripts/`
+- `chrome_profiles/`
+- `dist/`
+- `build/`
+- `release/`
 
-Do not commit secrets, recordings, private call logs, generated transcripts, or local Chrome profile data.
+These can contain secrets, phone numbers, recordings, transcripts, local browser sessions, and generated build artifacts.
 
-## 24/7 Operation Guidance
+---
 
-For reliable long-running calling:
+## 24/7 Operations
 
-- Keep Chrome profile persistent and verify login before each dialing batch.
-- Use a conservative `call_cooldown_seconds`.
-- Keep `max_ring_seconds` realistic for your target numbers.
-- Avoid calling the same failed number repeatedly.
-- Watch Groq rate limits and add backoff if you scale call volume.
-- Use a process supervisor or scheduled restart.
-- Rotate logs and archive transcripts.
-- Monitor Google Voice account health manually.
-- Keep manual fallback access to Chrome in case Google requires re-login.
+For long-running calling:
 
-Useful observability upgrades:
+- Keep the Chrome profile persistent.
+- Confirm Google Voice login before dialing batches.
+- Use conservative cooldowns between calls.
+- Avoid repeated attempts to failed or busy numbers.
+- Monitor Groq rate limits.
+- Rotate logs and archive recordings.
+- Use a dedicated audio route instead of default speaker loopback.
+- Watch Google Voice account health.
+- Keep a manual Chrome fallback for login challenges.
+- Restart the app on a schedule if the browser session drifts.
 
-- Langfuse for AI prompt/response tracing.
-- OpenTelemetry for process metrics and distributed traces.
+Recommended future upgrades:
+
 - Silero VAD for stronger speech detection.
 - Deepgram for lower-latency realtime STT.
+- Langfuse for AI prompt/response tracing.
+- OpenTelemetry for runtime metrics.
 
-Heavier tools are not automatically better:
+Tools to delay unless the architecture changes:
 
-- WhisperX is excellent for offline/recorded transcription, but it is usually too heavy for low-latency live calls.
-- pyannote-audio helps with speaker diarization, but it adds GPU/CPU cost and is not required for basic two-party calls.
-- LiveKit is powerful realtime voice infrastructure, but adopting it would be an architecture change. Use it only if you move away from browser-based Google Voice automation.
+- WhisperX is better for offline recordings than live low-latency calls.
+- pyannote-audio is useful for diarization, but it adds compute cost.
+- LiveKit is powerful, but it would be a larger move away from browser-based Google Voice automation.
+
+---
 
 ## Troubleshooting
 
 Call ends while still ringing:
 
 - Check `min_ring_seconds`.
-- Check the detailed `detect_call_state()` logs.
-- Confirm Google Voice DOM has not changed.
-- Confirm no stale ended-call banner is being mistaken for the active call.
+- Review `CALL_STATE` logs.
+- Confirm Google Voice DOM did not change.
+- Confirm no stale ended banner is being treated as the current call.
 
-AI talks before pickup:
+AI speaks before pickup:
 
-- Confirm connected evidence is logged before conversation starts.
-- Run `--safe-test` and inspect state transition logs.
+- Confirm connected evidence appears before `ConversationLoop` starts.
+- Run a safe test and inspect state transition logs.
 
 Voicemail triggers too early:
 
-- Confirm voicemail cues are ignored during ringing.
-- Confirm voicemail is detected only after connected state or clear greeting/beep evidence.
+- Confirm voicemail cues are ignored while ringing.
+- Confirm voicemail is only accepted after connected/greeting/beep evidence.
 
 No audio into Google Voice:
 
-- Check Chrome microphone is set to `CABLE Output`.
-- Check agent playback is set to `CABLE Input`.
+- Set Chrome microphone to `CABLE Output`.
+- Set agent playback to `CABLE Input`.
 - Run `--audio-route-test`.
 
 Agent hears itself:
 
 - Avoid `CAPTURE_DEVICE=default` for unattended runs.
-- Use a dedicated capture path for remote call audio.
+- Use a dedicated inbound capture path.
 
 Chrome login expires:
 
 - Open the configured Chrome profile manually.
-- Log into Google Voice again.
-- Rerun `--preflight`.
+- Log into Google Voice.
+- Run `python -m src.main --preflight`.
 
-## Manual Live-Call Test Checklist
+---
 
-Use a number you own:
+## Manual Live-Call Test
+
+Use a number you own or have permission to call:
 
 1. Run `python -m src.main --preflight`.
 2. Run `python -m src.main --safe-test +15551234567`.
-3. Let the phone ring for several seconds before answering.
+3. Let the phone ring for several seconds.
 4. Confirm the AI does not speak while ringing.
 5. Answer the call.
 6. Confirm the AI speaks only after connection.
-7. Say a short phrase and confirm it responds naturally.
-8. Repeat once and decline/send to voicemail.
-9. Confirm voicemail is detected only after greeting or beep.
-10. Review `logs/`, transcripts, and call result CSVs.
+7. Say a short phrase and confirm it responds.
+8. Decline/send one call to voicemail.
+9. Confirm voicemail is detected after greeting or beep.
+10. Review logs, transcript, recording, and call archive.
 
-## Development Notes
+---
 
-Keep changes small around the call-state machine. The browser DOM, call timer, active controls, audio classifier, silence logic, and timeout logic all interact. Tests should cover ringing, connected, voicemail, ended, timeout, and stale-DOM cases whenever that area changes.
+## Repository Hygiene
 
-Before pushing:
+The repository keeps source, tests, packaging scripts, workflows, and examples. It intentionally excludes local runtime data, browser profiles, build folders, logs, recordings, generated voicemails, secrets, and private contact data.
 
-```powershell
-python -m pytest tests -q
-python -m src.main --preflight
-```
+Local editor folders, generated test caches, temporary build folders, private runtime data, and one-off planning notes are not part of the product repository.
+
+---
+
+<div align="center">
+  <strong>Built for practical AI calling automation: careful state detection, real logs, real audio routing, and a Windows app path.</strong>
+</div>
