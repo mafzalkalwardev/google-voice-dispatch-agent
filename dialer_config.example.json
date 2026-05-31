@@ -16,7 +16,7 @@
   "wait_for_human_audio": true,
   "human_audio_timeout_seconds": 8.0,
   "answer_confirm_polls": 2,
-  "min_ring_seconds": 0.0,
+  "min_ring_seconds": 2.0,
   "max_ring_seconds": 45.0,
   "voicemail_detect_seconds": 15.0,
   "call_cooldown_seconds": 10.0,

@@ -43,7 +43,9 @@ class TestConnectedDetection:
              patch.object(browser, "_any_present", return_value=False), \
              patch.object(browser, "_voicemail_cue_present", return_value=False), \
              patch.object(browser, "_page_contains_voicemail", return_value=False):
-            state = browser.detect_call_state(session, poll_interval=0.01, timeout=0.5)
+            state = browser.detect_call_state(
+                session, poll_interval=0.01, timeout=0.5, min_ring_seconds=0
+            )
 
         assert state == CallState.CONNECTED
         assert session.state == CallState.CONNECTED
@@ -86,10 +88,12 @@ class TestConnectedDetection:
         session = _ringing_session()
 
         with patch.object(browser, "_connected_timer_present", return_value=True), \
-             patch.object(browser, "_any_present", return_value=True), \
+             patch.object(browser, "_any_present", return_value=False), \
              patch.object(browser, "_voicemail_cue_present", return_value=False), \
              patch.object(browser, "_page_contains_voicemail", return_value=False):
-            state = browser.detect_call_state(session, poll_interval=0.01, timeout=0.5)
+            state = browser.detect_call_state(
+                session, poll_interval=0.01, timeout=0.5, min_ring_seconds=0
+            )
 
         assert state == CallState.CONNECTED
 
@@ -110,7 +114,9 @@ class TestConnectedDetection:
              patch.object(browser, "_any_present", return_value=False), \
              patch.object(browser, "_voicemail_cue_present", return_value=False), \
              patch.object(browser, "_page_contains_voicemail", return_value=False):
-            state = browser.detect_call_state(session, poll_interval=0.01, timeout=0.5)
+            state = browser.detect_call_state(
+                session, poll_interval=0.01, timeout=0.5, min_ring_seconds=0
+            )
 
         assert state == CallState.CONNECTED
         assert session.state == CallState.CONNECTED
@@ -126,7 +132,9 @@ class TestConnectedDetection:
              patch.object(browser, "_any_present", return_value=False), \
              patch.object(browser, "_voicemail_cue_present", return_value=False), \
              patch.object(browser, "_page_contains_voicemail", return_value=False):
-            browser.detect_call_state(session, poll_interval=0.01, timeout=0.5)
+            browser.detect_call_state(
+                session, poll_interval=0.01, timeout=0.5, min_ring_seconds=0
+            )
 
         assert session.state == CallState.CONNECTED
         combined_notes = " ".join(session.notes)
@@ -145,16 +153,41 @@ class TestConnectedDetection:
              patch.object(browser, "_any_present", return_value=False), \
              patch.object(browser, "_voicemail_cue_present", return_value=False), \
              patch.object(browser, "_page_contains_voicemail", return_value=False):
-            state = browser.detect_call_state(session, poll_interval=0.01, timeout=0.5)
+            state = browser.detect_call_state(
+                session, poll_interval=0.01, timeout=0.5, min_ring_seconds=0
+            )
 
         assert state == CallState.CONNECTED
+
+    def test_answered_evidence_before_min_ring_stays_ringing_until_timeout(self):
+        """Timer/answered controls before min_ring_seconds must not connect immediately."""
+        browser = _make_browser()
+        session = _ringing_session()
+
+        with patch.object(browser, "_connected_timer_evidence", return_value="visible duration text '0:01'"), \
+             patch.object(browser, "_answered_controls_present",
+                          return_value=(True, ["Hold call"])), \
+             patch.object(browser, "_any_present", return_value=False), \
+             patch.object(browser, "_voicemail_cue_present", return_value=False), \
+             patch.object(browser, "_page_contains_voicemail", return_value=False):
+            state = browser.detect_call_state(
+                session,
+                poll_interval=0.01,
+                timeout=0.05,
+                min_ring_seconds=5.0,
+                max_ring_seconds=10.0,
+            )
+
+        assert state == CallState.FAILED
+        assert session.state == CallState.FAILED
+        assert session.connected_at is None
 
 
 # ── Voicemail detection ──────────────────────────────────────────────────────
 
 class TestVoicemailDetection:
 
-    def test_voicemail_dom_cue_from_ringing(self):
+    def test_voicemail_dom_cue_during_ringing_is_ignored(self):
         """voicemail DOM cue while RINGING → VOICEMAIL."""
         browser = _make_browser()
         session = _ringing_session()
@@ -162,12 +195,19 @@ class TestVoicemailDetection:
         with patch.object(browser, "_connected_timer_present", return_value=False), \
              patch.object(browser, "_voicemail_cue_present", return_value=True), \
              patch.object(browser, "_page_contains_voicemail", return_value=False):
-            state = browser.detect_call_state(session, poll_interval=0.01, timeout=0.5)
+            state = browser.detect_call_state(
+                session,
+                poll_interval=0.01,
+                timeout=0.05,
+                min_ring_seconds=1.0,
+                max_ring_seconds=2.0,
+            )
 
-        assert state == CallState.VOICEMAIL
-        assert session.state == CallState.VOICEMAIL
+        assert state == CallState.FAILED
+        assert session.state == CallState.FAILED
+        assert session.voicemail_detected_at is None
 
-    def test_voicemail_page_phrase_from_ringing(self):
+    def test_voicemail_page_phrase_during_ringing_is_ignored(self):
         """Page-source voicemail phrase while RINGING → VOICEMAIL."""
         browser = _make_browser()
         session = _ringing_session()
@@ -175,9 +215,39 @@ class TestVoicemailDetection:
         with patch.object(browser, "_connected_timer_present", return_value=False), \
              patch.object(browser, "_voicemail_cue_present", return_value=False), \
              patch.object(browser, "_page_contains_voicemail", return_value=True):
-            state = browser.detect_call_state(session, poll_interval=0.01, timeout=0.5)
+            state = browser.detect_call_state(
+                session,
+                poll_interval=0.01,
+                timeout=0.05,
+                min_ring_seconds=1.0,
+                max_ring_seconds=2.0,
+            )
+
+        assert state == CallState.FAILED
+        assert session.voicemail_detected_at is None
+
+    def test_voicemail_page_phrase_after_connected_triggers_voicemail(self):
+        """Voicemail cues are accepted after real connected evidence."""
+        browser = _make_browser()
+        session = CallSession(phone="+15550000002", contact_name="Test")
+        session.transition(CallState.DIALING)
+        session.transition(CallState.RINGING, "ringing")
+        session.transition(CallState.CONNECTED, "timer visible")
+
+        with patch.object(browser, "_connected_timer_evidence", return_value=None), \
+             patch.object(browser, "_answered_controls_present", return_value=(False, [])), \
+             patch.object(browser, "_voicemail_cue_present", return_value=False), \
+             patch.object(browser, "_page_contains_voicemail", return_value=True), \
+             patch.object(browser, "_any_present", side_effect=lambda g: g == "call_active"):
+            state = browser.detect_call_state(
+                session,
+                poll_interval=0.01,
+                timeout=0.5,
+                voicemail_detect_seconds=30.0,
+            )
 
         assert state == CallState.VOICEMAIL
+        assert session.voicemail_detected_at is not None
 
     def test_generic_voicemail_navigation_is_not_a_dom_cue(self):
         """Persistent Google Voice voicemail navigation must not end a ringing call."""
@@ -200,9 +270,54 @@ class TestEndDetection:
              patch.object(browser, "_any_present", side_effect=lambda g: g == "call_ended_banner"), \
              patch.object(browser, "_voicemail_cue_present", return_value=False), \
              patch.object(browser, "_page_contains_voicemail", return_value=False):
-            state = browser.detect_call_state(session, poll_interval=0.01, timeout=0.5)
+            state = browser.detect_call_state(
+                session, poll_interval=0.01, timeout=0.5, min_ring_seconds=0
+            )
 
         assert state == CallState.ENDED
+
+    def test_call_ended_banner_before_min_ring_is_ignored(self):
+        """Transient ended banner before min ring must not instantly end ringing."""
+        browser = _make_browser()
+        session = _ringing_session()
+
+        with patch.object(browser, "_connected_timer_evidence", return_value=None), \
+             patch.object(browser, "_answered_controls_present", return_value=(False, [])), \
+             patch.object(browser, "_any_present", side_effect=lambda g: g == "call_ended_banner"), \
+             patch.object(browser, "_voicemail_cue_present", return_value=False), \
+             patch.object(browser, "_page_contains_voicemail", return_value=False):
+            state = browser.detect_call_state(
+                session,
+                poll_interval=0.01,
+                timeout=0.05,
+                min_ring_seconds=5.0,
+                max_ring_seconds=10.0,
+            )
+
+        assert state == CallState.FAILED
+        assert session.state == CallState.FAILED
+        assert all("call-ended banner detected" not in note for note in session.notes)
+
+    def test_max_ring_seconds_stops_ringing_as_no_answer(self):
+        """RINGING transitions to no-answer once max_ring_seconds elapses."""
+        browser = _make_browser()
+        session = _ringing_session()
+
+        with patch.object(browser, "_connected_timer_evidence", return_value=None), \
+             patch.object(browser, "_answered_controls_present", return_value=(False, [])), \
+             patch.object(browser, "_any_present", return_value=False), \
+             patch.object(browser, "_voicemail_cue_present", return_value=False), \
+             patch.object(browser, "_page_contains_voicemail", return_value=False):
+            state = browser.detect_call_state(
+                session,
+                poll_interval=0.01,
+                timeout=1.0,
+                min_ring_seconds=0.0,
+                max_ring_seconds=0.03,
+            )
+
+        assert state == CallState.FAILED
+        assert "max ring seconds elapsed" in " ".join(session.notes)
 
     def test_hangup_disappears_after_connected_triggers_ended(self):
         """Once CONNECTED, hangup button disappearing → ENDED."""

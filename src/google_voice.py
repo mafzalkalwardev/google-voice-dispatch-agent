@@ -635,23 +635,55 @@ class GoogleVoiceBrowser:
 
 
         ctrl_consecutive = 0
-        answered_ts: float | None = None
+        if session.state == CallState.CONNECTED and session.connected_at is not None:
+            answered_ts: float | None = session.connected_at.timestamp()
+        elif session.state == CallState.CONNECTED:
+            answered_ts = start_ts
+        else:
+            answered_ts = None
+        next_poll_log_ts = 0.0
 
         while time.time() < deadline:
-            elapsed = time.time() - start_ts
+            now = time.time()
+            elapsed = now - start_ts
 
             # ---------------- ANSWERED detection (timer/answered controls) ----------------
-            timer_present = self._connected_timer_present()
+            timer_evidence = self._connected_timer_evidence()
+            timer_present = timer_evidence is not None or self._connected_timer_present()
+            if timer_present and timer_evidence is None:
+                timer_evidence = "call timer visible"
             ctrl_present, ctrl_labels = self._answered_controls_present()
+            voicemail_cue = self._voicemail_cue_present()
+            voicemail_page = self._page_contains_voicemail()
+            ended_banner = self._any_present("call_ended_banner")
+            call_active = self._any_present("call_active")
+
+            if now >= next_poll_log_ts:
+                logger.info(
+                    "CALL_STATE poll state=%s elapsed_ring=%.1fs min_ring=%.1fs max_ring=%.1fs "
+                    "timer=%s controls=%s call_active=%s ended_banner=%s voicemail_dom=%s "
+                    "voicemail_page=%s audio_classifier=%s",
+                    session.state.value,
+                    elapsed,
+                    float(min_ring_seconds),
+                    float(max_ring_seconds),
+                    timer_evidence or False,
+                    ctrl_labels if ctrl_present else [],
+                    call_active,
+                    ended_banner,
+                    voicemail_cue,
+                    voicemail_page,
+                    "not_available_in_dom_detector",
+                )
+                next_poll_log_ts = now + max(2.0, float(poll_interval))
 
             if answered_ts is None:
                 # Still ringing. Only declare ANSWERED after min_ring_seconds.
-                answered_gate = True
+                answered_gate = elapsed >= float(min_ring_seconds)
 
                 if answered_gate and timer_present:
-                    timer_evidence = self._connected_timer_evidence() or "call timer visible"
                     logger.info("ANSWERED: call timer detected after %.1fs: %s", elapsed, timer_evidence)
-                    answered_ts = time.time()
+                    answered_ts = now
                     session.transition(CallState.CONNECTED, f"answered: call timer visible: {timer_evidence}")
                     return CallState.CONNECTED
 
@@ -663,9 +695,18 @@ class GoogleVoiceBrowser:
                             + ", ".join(ctrl_labels[:4])
                         )
                         logger.info("ANSWERED: %s", reason)
-                        answered_ts = time.time()
+                        answered_ts = now
                         session.transition(CallState.CONNECTED, reason)
                         return CallState.CONNECTED
+                elif not answered_gate and (timer_present or ctrl_present):
+                    logger.info(
+                        "ANSWERED evidence seen before min ring; holding in RINGING "
+                        "(elapsed=%.1fs min=%.1fs timer=%s controls=%s)",
+                        elapsed,
+                        float(min_ring_seconds),
+                        bool(timer_present),
+                        ctrl_labels if ctrl_present else [],
+                    )
                 else:
                     if ctrl_consecutive > 0:
                         logger.debug(
@@ -677,33 +718,79 @@ class GoogleVoiceBrowser:
 
                 # ---------------- VOICEMAIL/ENDED only when ANSWERED begins ----------------
                 # During ringing, explicitly do NOT declare voicemail.
+                if voicemail_cue or voicemail_page:
+                    logger.info(
+                        "RINGING: ignoring voicemail cue before answered evidence "
+                        "(elapsed=%.1fs dom=%s page=%s)",
+                        elapsed,
+                        voicemail_cue,
+                        voicemail_page,
+                    )
+                if ended_banner and elapsed < float(min_ring_seconds):
+                    logger.info(
+                        "RINGING: ignoring call-ended banner before min ring "
+                        "(elapsed=%.1fs min=%.1fs)",
+                        elapsed,
+                        float(min_ring_seconds),
+                    )
+                elif ended_banner:
+                    session.transition(CallState.ENDED, "call-ended banner detected after min ring")
+                    logger.info(
+                        "ENDED: call-ended banner after %.1fs while ringing (timeout_reason=ended_banner)",
+                        elapsed,
+                    )
+                    return CallState.ENDED
+                if elapsed >= float(max_ring_seconds):
+                    logger.info(
+                        "NO_ANSWER: max ring elapsed (elapsed=%.1fs max=%.1fs timeout_reason=max_ring_seconds)",
+                        elapsed,
+                        float(max_ring_seconds),
+                    )
+                    session.transition(CallState.FAILED, "no answer (max ring seconds elapsed)")
+                    return CallState.FAILED
 
-            if self._voicemail_cue_present():
-                if session.state in (CallState.RINGING, CallState.CONNECTED):
-                    session.transition(CallState.VOICEMAIL, "voicemail DOM cue")
-                return CallState.VOICEMAIL
-
-            if self._page_contains_voicemail():
-                if session.state in (CallState.RINGING, CallState.CONNECTED):
-                    session.transition(CallState.VOICEMAIL, "voicemail page-source heuristic")
-                return CallState.VOICEMAIL
+                time.sleep(poll_interval)
+                continue
 
             # If already answered, voicemail can be detected only shortly after.
             if answered_ts is not None:
-                if (time.time() - answered_ts) <= float(voicemail_detect_seconds):
-                    if self._voicemail_cue_present() or self._page_contains_voicemail():
+                if (now - answered_ts) <= float(voicemail_detect_seconds):
+                    if voicemail_cue or voicemail_page:
                         session.transition(CallState.VOICEMAIL, "voicemail detected shortly after ANSWERED")
+                        logger.info(
+                            "VOICEMAIL: detected after answered evidence "
+                            "(elapsed=%.1fs since_answer=%.1fs dom=%s page=%s audio_classifier=%s)",
+                            elapsed,
+                            now - answered_ts,
+                            voicemail_cue,
+                            voicemail_page,
+                            "not_available_in_dom_detector",
+                        )
                         return CallState.VOICEMAIL
+                elif voicemail_cue or voicemail_page:
+                    logger.info(
+                        "CONNECTED: ignoring late voicemail cue outside detect window "
+                        "(since_answer=%.1fs window=%.1fs dom=%s page=%s)",
+                        now - answered_ts,
+                        float(voicemail_detect_seconds),
+                        voicemail_cue,
+                        voicemail_page,
+                    )
                 # After voicemail-detect window, only rely on connected->ended transitions.
 
             # ---------------- ENDED detection ----------------
-            if self._any_present("call_ended_banner"):
+            if ended_banner:
                 if not session.is_terminal():
                     session.transition(CallState.ENDED, "call-ended banner detected")
+                logger.info(
+                    "ENDED: call-ended banner detected (state=%s elapsed=%.1fs timeout_reason=ended_banner)",
+                    session.state.value,
+                    elapsed,
+                )
                 return CallState.ENDED
 
             # When the call ends, the hangup button disappears.
-            if session.state == CallState.CONNECTED and not self._any_present("call_active"):
+            if session.state == CallState.CONNECTED and not call_active:
                 logger.info("ENDED: active call controls vanished (hangup button gone)")
                 session.transition(CallState.ENDED, "active call controls vanished")
                 return CallState.ENDED

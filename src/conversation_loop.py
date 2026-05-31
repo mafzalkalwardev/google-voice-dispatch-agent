@@ -133,6 +133,7 @@ class ConversationLoop:
         self._last_empty_stt_reason = ""
         self._last_tts_text = ""
         self._last_tts_duration = 0.0
+        self._last_voicemail_classifier_label = ""
 
         # Tony echo semantic suppression settings
         self._toney_echo_similarity_threshold = 0.86
@@ -173,6 +174,7 @@ class ConversationLoop:
             self._last_speech_activity + self._voicemail_detect_seconds
         )
         self._voicemail_detected = False
+        self._last_voicemail_classifier_label = ""
 
         self._next_silence_log = self._last_speech_activity + self._max_silence_seconds
         self._set_state(STATE_WAITING_FOR_ANSWER, "call connected; starting capture before TTS")
@@ -340,6 +342,7 @@ class ConversationLoop:
             "last_empty_stt_reason": self._last_empty_stt_reason,
             "last_tts_text": self._last_tts_text,
             "last_tts_duration_seconds": self._last_tts_duration,
+            "voicemail_classifier_result": self._last_voicemail_classifier_label,
             "silence_seconds": max(0.0, time.monotonic() - self._last_speech_activity),
         }
 
@@ -588,6 +591,14 @@ class ConversationLoop:
             if not self._voicemail_detected and time.monotonic() <= self._voicemail_check_deadline_monotonic:
                 try:
                     label = self._voicemail_detector.process_frame(frame, samplerate=_SAMPLERATE)
+                    if label != self._last_voicemail_classifier_label:
+                        self._last_voicemail_classifier_label = label
+                        logger.info(
+                            "[VM] audio_classifier_result=%s window_remaining=%.1fs rms=%.4f",
+                            label,
+                            max(0.0, self._voicemail_check_deadline_monotonic - time.monotonic()),
+                            rms,
+                        )
                     if label == "beep_detected":
                         self._voicemail_detected = True
                         logger.info("[VM] Voicemail beep detected early; stopping conversation loop")

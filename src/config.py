@@ -40,7 +40,7 @@ _DEFAULTS = {
     "wait_for_human_audio": True,         # listen for inbound audio before speaking
     "human_audio_timeout_seconds": 8.0,   # max seconds to listen before speaking anyway
     "answer_confirm_polls": 2,            # consecutive DOM polls required to confirm CONNECTED
-    "min_ring_seconds": 0.0,              # keep 0: real answer controls/timer are stronger than elapsed time
+    "min_ring_seconds": 2.0,              # ignore transient DOM cues immediately after dialing
     "max_ring_seconds": 45.0,             # stop waiting for no-answer calls after this window
     "voicemail_detect_seconds": 15.0,     # active voicemail cue window after answer evidence
     "call_cooldown_seconds": 10.0,        # pause between live calls

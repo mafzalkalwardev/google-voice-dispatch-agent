@@ -124,7 +124,7 @@ def test_detect_call_state_connected_when_timer_found():
     session = CallSession(phone="+15551234567", contact_name="Test")
     session.transition(CallState.DIALING)
 
-    result = b.detect_call_state(session, poll_interval=0.05, timeout=2.0)
+    result = b.detect_call_state(session, poll_interval=0.05, timeout=2.0, min_ring_seconds=0)
     assert result == CallState.CONNECTED
 
 
@@ -150,13 +150,15 @@ def test_detect_call_state_does_not_connect_on_hangup_button_only():
     assert session.state == CallState.FAILED
 
 
-def test_detect_call_state_voicemail_via_page_source():
+def test_detect_call_state_voicemail_via_page_source_after_connected():
     b = _make_browser()
     b.driver.find_elements.return_value = []
     b.driver.page_source = "<html>please leave a message after the beep</html>"
 
     session = CallSession(phone="+15551234567", contact_name="Test")
     session.transition(CallState.DIALING)
+    session.transition(CallState.RINGING)
+    session.transition(CallState.CONNECTED)
 
     result = b.detect_call_state(session, poll_interval=0.05, timeout=2.0)
     assert result == CallState.VOICEMAIL

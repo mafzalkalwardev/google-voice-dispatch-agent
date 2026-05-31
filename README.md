@@ -1,379 +1,328 @@
-# Google Voice Dispatch Agent — INDUS TRANSPORTS LLC
+# GoogleVoiceAgent-Active
 
-Realtime Google Voice browser automation for freight dispatch outreach.
-Includes a full operator console web frontend with Leads CRM, call logging,
-and Groq-powered transcript extraction.
+Live AI calling agent for Google Voice. It opens Google Voice in Chrome, dials contacts from a local CRM file, waits for real call evidence, speaks through a virtual audio cable, listens to the call audio, transcribes speech, generates replies with Groq, and writes call results back to logs.
 
----
+This project is built as a practical console-first automation tool. A FastAPI web console is included for monitoring and configuration, but the main operating path is still the CLI.
 
-## Quick Start
+## Important Notice
+
+This software can place real phone calls. You are responsible for consent, caller-ID rules, Do Not Call rules, recording disclosure, spam prevention, local law, carrier terms, Google Voice terms, and any business compliance requirements. Test only with numbers you own or have permission to call.
+
+Google Voice is not a carrier-grade outbound calling API. For 24/7 production calling, expect browser session expiry, rate limits, UI changes, audio-device drift, and account risk if calls are too frequent or too repetitive.
+
+## What It Does
+
+- Uses Selenium to control the Google Voice web app.
+- Uses Chrome profile persistence so Google login can survive across runs.
+- Dials contacts from CSV/CRM data.
+- Waits for actual connected-call evidence before the AI speaks.
+- Tracks call state with `CallState`: ringing, connected, voicemail, ended, failed.
+- Supports realtime voice conversation using STT, LLM, and TTS.
+- Detects voicemail after connection using DOM cues and audio classifier evidence.
+- Can leave a voicemail message when voicemail is confirmed.
+- Logs call outcomes, transcripts, diagnostics, and CRM updates.
+- Includes a web console for settings, CRM review, logs, and manual controls.
+
+## Current Ringing Safety
+
+The call-state logic is intentionally conservative:
+
+- Ringing does not instantly end just because a page banner appears.
+- `min_ring_seconds` is respected before accepting connected, ended, or voicemail transitions.
+- Voicemail DOM cues are ignored while the call is still only ringing.
+- Connected state requires real evidence, such as call timer or active call controls.
+- The AI opening line is only played after the call is confirmed connected.
+- Silence during ringing does not end the call when `silence_does_not_end_call=True`.
+- `max_ring_seconds` ends the attempt as no answer only after the configured ring window.
+
+Detailed state logs include the current state, elapsed ringing time, DOM cues, audio classifier result, and timeout reason.
+
+## Architecture
+
+Core files:
+
+- `src/main.py` - CLI entry point, batch runner, safe test mode, preflight, and call orchestration.
+- `src/google_voice.py` - Google Voice browser automation and call-state detection.
+- `src/call_session.py` - call state/session model.
+- `src/conversation_loop.py` - realtime audio capture, VAD/silence handling, STT, LLM reply flow, and TTS playback.
+- `src/voicemail_detector.py` - audio-based voicemail/greeting classifier.
+- `src/agent_core.py` - AI response generation and conversation behavior.
+- `src/config.py` - environment and JSON configuration loading.
+- `src/web_app.py` - FastAPI web console and settings routes.
+- `tests/` - automated tests for state handling, mock dialing, CRM, config, and audio helpers.
+
+High-level flow:
+
+1. Load `.env`, `dialer_config.json`, and CRM/contact data.
+2. Run preflight checks for API keys, Chrome profile, contacts, and audio devices.
+3. Open Google Voice with the configured Chrome profile.
+4. Dial one contact.
+5. Poll `detect_call_state()` until connected, voicemail, no answer, ended, or failed.
+6. If connected, start `ConversationLoop`.
+7. If voicemail is confirmed, play configured voicemail message.
+8. Write logs, transcripts, status, and CRM updates.
+9. Cool down, then continue to the next contact.
+
+## Requirements
+
+- Windows recommended.
+- Python 3.10+.
+- Google Chrome.
+- A Google Voice account already logged in through the configured Chrome profile.
+- VB-CABLE or equivalent virtual audio device.
+- Groq API key.
+- Microphone/audio routing configured so Chrome can receive the TTS audio and the agent can capture call audio.
+
+Install dependencies:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-Copy `.env.example` to `.env` and fill in real values (at minimum `GROQ_API_KEY` and `CALLBACK_NUMBER`).
-
----
-
-## Web Frontend (Operator Console)
-
-Quick Windows launcher:
+Create local config:
 
 ```powershell
-.\Start-IndusConsole.ps1
+Copy-Item .env.example .env
+Copy-Item dialer_config.example.json dialer_config.json
 ```
 
-This starts the local backend and opens the Live Run console automatically.
-If PowerShell blocks scripts, run:
+Then edit `.env` and `dialer_config.json`.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\Start-IndusConsole.ps1
-```
+## Key Configuration
 
-Manual start:
-
-```powershell
-python -m src.web_app
-```
-
-Then open **http://127.0.0.1:8000** in your browser.
-
-Or with auto-reload during development:
-
-```powershell
-uvicorn src.web_app:app --reload --port 8000
-```
-
-### Console pages
-
-| URL | Description |
-|-----|-------------|
-| `/` | Dashboard — recent call stats and quick actions |
-| `/preflight` | Run all environment checks before dialing |
-| `/settings` | Configure profiles, models, audio, timing |
-| `/contacts` | Upload or preview CSV/XLSX contact list |
-| `/audio` | Detected audio devices, loopback quick-set |
-| `/run` | Start / stop live runs, dry runs, live log stream |
-| `/logs` | Searchable call log viewer |
-| `/leads` | Carrier leads CRM — search, filter, export, add/edit |
-
----
-
-## Leads Page
-
-The `/leads` page is a lightweight CRM for carrier leads extracted from call transcripts.
-
-### How leads are created
-
-After each connected realtime call, the agent reads the saved transcript and calls
-Groq with a JSON extraction prompt to pull out structured lead data:
-
-- Company Name, Contact Name, MC Number, Email
-- Truck Type, Truck Length, Preferred Lanes
-- Agreed Dispatcher Percentage
-- Interested level (`Yes` / `Maybe` / `No` / `DNC`)
-- Callback Time, Remarks, Call Outcome
-
-The result is appended to `logs/leads.csv`. If the same phone number already has
-a row, the new data is merged in (existing non-empty fields are preserved).
-
-### Manual leads
-
-Use the **+ Add Lead** button on `/leads` to enter a lead manually.
-Click **Edit** on any row to update fields. All changes call `POST /api/leads`.
-
-### API endpoints
-
-| Method | URL | Description |
-|--------|-----|-------------|
-| `GET` | `/api/leads` | Return all leads as JSON (newest first) |
-| `POST` | `/api/leads` | Upsert a lead (match by phone_number) |
-| `GET` | `/api/leads/export` | Download `leads.csv` |
-
-### Interest badges
-
-| Badge | Meaning |
-|-------|---------|
-| Yes (green) | Carrier expressed genuine interest |
-| Maybe (amber) | Interested but needs follow-up |
-| No (red) | Not interested at this time |
-| DNC (dark) | Do Not Call |
-
-### Leads CSV columns
-
-`timestamp`, `company_name`, `contact_name`, `phone_number`, `mc_number`,
-`email`, `truck_type`, `truck_length`, `preferred_lanes`, `agreed_percentage`,
-`interested`, `callback_time`, `remarks`, `call_outcome`, `transcript_file`
-
----
-
-## Audio Routing (Windows)
-
-Install **VB-CABLE** from https://vb-audio.com/Cable/.
-
-### VB-CABLE setup (step by step)
-
-1. Download and install **VB-CABLE Driver** from https://vb-audio.com/Cable/index.htm
-2. Restart Windows after installation.
-3. Open **Sound settings → Playback** — you should see **CABLE Input** (the virtual speaker).
-4. Open **Sound settings → Recording** — you should see **CABLE Output** (the virtual microphone).
-5. In Google Chrome settings (`chrome://settings/content/microphone`), set the microphone to **CABLE Output**.
-6. In the Indus Dispatch Console → **Settings**, set:
-   - **Loopback Device**: `CABLE Input`
-   - **Capture Device**: `default` (system speakers, for single-cable) or `CABLE B Output` (dual-cable)
-
-### Single-cable setup (default)
-
-| Signal path | Device |
-|---|---|
-| Agent TTS → Chrome mic | `CABLE Input` (output) → `CABLE Output` (Chrome mic source) |
-| Prospect voice → STT | System speakers captured via `CAPTURE_DEVICE=default` |
-
-`.env` settings:
-```
-LOOPBACK_DEVICE=CABLE Input
-CAPTURE_DEVICE=default
-```
-
-### Dual-cable setup (echo-free, recommended for production)
-
-Install a second VB-CABLE pair. Route Chrome speaker output to **CABLE B Input**.
-Capture from **CABLE B Output** so prospect audio is isolated from TTS echo:
-
-```
-LOOPBACK_DEVICE=CABLE Input
-CAPTURE_DEVICE=CABLE B Output
-```
-
-### Audio troubleshooting
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| Tony's voice not heard by prospect | Chrome mic is not set to CABLE Output | Chrome → Settings → Privacy → Microphone → select **CABLE Output** |
-| Preflight reports `Device unavailable` | Windows exclusive-mode lock on CABLE Input | Right-click CABLE Input in Sound → Properties → Advanced → uncheck *Allow exclusive mode* |
-| STT always empty / VAD not triggering | Capture device muted or wrong index | Audio page → check capture device index; run `--audio-route-test` |
-| Echo / Tony hears himself | Single-cable setup picking up TTS playback | Use dual-cable setup (CABLE B for capture) |
-| Call connected but no audio injected | loopback_device name mismatch | Audio page → find exact device name; update `LOOPBACK_DEVICE` in Settings |
-| `validate_tts_output_device` error | Device index stale after USB reconnect | Re-run preflight or restart the app |
-
----
-
-## Environment Variables
-
-See `.env.example` for the full list. Key variables:
+Common `.env` values:
 
 ```env
-GROQ_API_KEY=gsk_...
-CALLBACK_NUMBER=+15551234567
-AGENT_NAME=Tony
-COMPANY_NAME=Indus Transports LLC
-LOOPBACK_DEVICE=CABLE Input
+GROQ_API_KEY=your_key_here
+GOOGLE_VOICE_URL=https://voice.google.com/u/0/calls
+CHROME_PROFILE_DIR=C:\Users\you\AppData\Local\Google\Chrome\User Data\GoogleVoiceAgent
+PLAYBACK_DEVICE=CABLE Input
 CAPTURE_DEVICE=default
 ```
 
----
+Common `dialer_config.json` values:
 
-## CLI
+```json
+{
+  "min_ring_seconds": 2,
+  "max_ring_seconds": 45,
+  "voicemail_detect_seconds": 15,
+  "silence_does_not_end_call": true,
+  "call_cooldown_seconds": 10,
+  "tts_warmup": true,
+  "stt_retry_count": 2,
+  "vad_silence_frames": 12,
+  "vad_speech_frames": 2
+}
+```
 
-### List audio devices
+For 24/7 calling, keep `min_ring_seconds` above zero and use a cooldown between calls. Do not run rapid retry loops against Google Voice.
+
+## Audio Setup
+
+Minimum VB-CABLE setup:
+
+- Set the agent playback device to `CABLE Input`.
+- Set Chrome microphone input to `CABLE Output`.
+- Let Chrome speaker output play the call audio to a device the agent can capture.
+
+Recommended 24/7 setup:
+
+- Use separate virtual routes for TTS output and call capture.
+- Avoid capturing the same speaker output that plays the agent voice.
+- Keep Windows default devices stable and disable unused audio devices if they cause drift.
+- Run `--list-audio-devices` after every driver or Windows audio change.
+
+Commands:
 
 ```powershell
 python -m src.main --list-audio-devices
+python -m src.main --audio-route-test
+python -m src.main --preflight
 ```
 
-### Run preflight checks
+If `CAPTURE_DEVICE=default`, Windows WASAPI loopback may capture the agent's own TTS voice. That can create echo/self-transcription. A proper dual-route setup is strongly recommended for unattended operation.
+
+## Console Commands
+
+Preflight:
 
 ```powershell
 python -m src.main --preflight
 ```
 
-### Audio route test (no call placed)
+List audio devices:
 
 ```powershell
-python -m src.main --audio-route-test
+python -m src.main --list-audio-devices
 ```
 
-### Dry run (no dialing, generates scripts only)
-
-```powershell
-python -m src.main --contacts data/contacts.xlsx --profile sales1 --limit 3 --dry-run
-```
-
-### Safe one-number test
+Run a safe one-number test:
 
 ```powershell
 python -m src.main --safe-test +15551234567
 ```
 
-### Full run
+Diagnose current Google Voice call state:
 
 ```powershell
-python -m src.main `
-  --contacts data/contacts.xlsx `
-  --profile sales1 `
-  --loopback-device "CABLE Input" `
-  --capture-device default `
-  --call-timeout 45 `
-  --call-max-duration 120 `
-  --callback-number "+15551234567" `
-  --limit 10
+python -m src.main --diagnose-call-state
 ```
 
-Realtime conversation is the default. Use `--static-playback` only for the older
-pregenerated WAV flow.
-
----
-
-## Connected Calls + Carrier CRM Backend
-
-The CRM backend is SQLite-backed and keeps legacy CSV compatibility. A call is
-promoted to **Connected Calls** only when Google Voice has connected evidence and
-the transcript contains a real prospect/carrier turn. Voicemail, failed, and
-silent connected calls are archived separately and excluded from connected-call
-views.
-
-Runtime storage:
-
-| Path | Purpose |
-|------|---------|
-| `logs/carrier_crm.sqlite3` | Permanent relational CRM database |
-| `connected_calls/<call_id>/` | Real connected conversations with transcript, recording, metadata, summary |
-| `voicemail_calls/<call_id>/` | Voicemail call metadata/artifacts |
-| `failed_calls/<call_id>/` | Failed and silent connected call metadata/artifacts |
-| `logs/leads.csv` | Backward-compatible lead export, updated after connected calls |
-
-Core relationships:
-
-```text
-carriers
-  -> connected_calls
-  -> call_artifacts
-  -> notes
-  -> follow_ups
-```
-
-Carrier duplicate merging uses normalized `phone`, `mc_number`, or `email`.
-Search indexing covers company, carrier, phone, MC/DOT, email, transcripts,
-summaries, notes, and follow-up records.
-
-Main APIs:
-
-| API | Description |
-|-----|-------------|
-| `GET /api/connected-calls` | List real answered conversations |
-| `GET /api/connected-calls/{id}` | Connected call detail |
-| `GET /api/connected-calls/search?q=` | Search connected calls |
-| `GET /api/connected-calls/export` | Export connected calls CSV |
-| `GET /api/carrier-crm` | List carrier profiles |
-| `GET /api/carrier-crm/{id}` | Carrier profile with history |
-| `GET /api/carrier-crm/search?q=` | Global carrier CRM search |
-| `PATCH /api/carrier-crm/{id}` | Edit carrier/lead fields |
-| `POST /api/carrier-crm/{id}/notes` | Add note |
-| `POST /api/carrier-crm/{id}/follow-up` | Schedule follow-up |
-| `POST /api/carrier-crm/{id}/assign-dispatcher` | Assign dispatcher |
-| `GET /api/carrier-crm/{id}/export` | Export one profile as JSON |
-| `GET /api/carrier-crm/export` | Export CRM CSV |
-| `GET /api/recordings/{call_id}` | Download connected-call recording |
-
-Sample connected-call transcript:
-
-```text
-[12:00:00] Tony: What truck are you running right now?
-[12:00:05] Prospect: I run a 53 foot dry van, mostly Midwest to Texas.
-[12:00:18] Tony: Got it. Are you booking loads yourself or using a dispatcher?
-[12:00:24] Prospect: Booking myself, but deadhead has been killing us.
-```
-
-Sample CRM summary:
-
-```json
-{
-  "sentiment": "positive",
-  "close_probability": "75%",
-  "urgency": "medium",
-  "pain_points": "deadhead and inconsistent Midwest reloads",
-  "best_follow_up_strategy": "Lead with Midwest-to-Texas lane planning and 6% dry van dispatch terms"
-}
-```
-
-Sample carrier record:
-
-```json
-{
-  "company_name": "Road Star Logistics",
-  "carrier_name": "Sam Carrier",
-  "phone": "+15551234567",
-  "mc_number": "MC-123456",
-  "dot_number": "DOT-987654",
-  "email": "sam@roadstar.example",
-  "truck_type": "Dry Van",
-  "truck_length": "53ft",
-  "preferred_lanes": "Midwest to Texas",
-  "agreed_percentage": "6%",
-  "follow_up_status": "Interested",
-  "callback_time": "Thursday 2pm"
-}
-```
-
----
-
-## Windows EXE / Installer Build
+Dry run without dialing:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1
+python -m src.main --dry-run
 ```
 
-Build output:
-
-- `dist\IndusDispatchConsole.exe`
-- `release\IndusDispatchConsole-portable.zip`
-
-Optional installer build (requires Inno Setup):
+Start normal calling:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1 -BuildInstaller
+python -m src.main
 ```
 
-Runtime data is stored outside the binary:
-
-```text
-%LOCALAPPDATA%\IndusDispatchAgent
-```
-
----
-
-## Tests
+Start the web console:
 
 ```powershell
-python -m pytest tests/ -v
+python -m src.web_app
 ```
 
----
+Then open the local URL printed by FastAPI.
 
-## Records and Logs
+## Web Console
 
-All operational records are stored under `logs/` (git-ignored):
+The web console is useful for operations, not required for the console app.
 
-| File | Description |
-|------|-------------|
-| `logs/call_logs.csv` | Per-call outcome log |
-| `logs/leads.csv` | Structured carrier leads CRM |
-| `logs/transcripts/<phone>_<ts>.txt` | Full conversation transcripts |
-| `logs/recordings/<phone>_<ts>.wav` | Temporary incoming-call recordings before CRM archival |
+Typical areas:
 
----
+- Dashboard/status page.
+- Settings editor.
+- Contact/CRM review.
+- Logs and transcripts.
+- Manual call/test actions.
 
-## Safety & Compliance
+The backend routes are defined in `src/web_app.py`. Static assets and templates live under the web/static/template folders used by that module.
 
-- Keep `.env`, `dialer_config.json`, contacts, audio, logs, and Chrome profiles out of Git.
-- Test with your own phone first using `--safe-test +1XXXXXXXXXX`.
-- Follow TCPA, FDCPA, DNC registry rules, state call-recording laws, Google Voice Terms of Service,
-  and all applicable regulations before dialing third parties.
-- The web console shows a compliance acknowledgement before enabling live dialing.
+## Testing
 
----
+Run the full test suite:
 
-*Developer: **Muhammad Afzal** — WhatsApp: +923079670503*
+```powershell
+python -m pytest tests -q
+```
+
+Optional compile check:
+
+```powershell
+python -m compileall src tests
+```
+
+Recommended before a live calling session:
+
+```powershell
+python -m src.main --preflight
+python -m src.main --safe-test +15551234567
+python -m pytest tests -q
+```
+
+## Logs And Runtime Files
+
+Runtime output is written under project log/output folders such as:
+
+- `logs/`
+- `connected_calls/`
+- `failed_calls/`
+- `voicemail_calls/`
+- `recordings/`
+- generated TTS/audio files
+
+Do not commit secrets, recordings, private call logs, generated transcripts, or local Chrome profile data.
+
+## 24/7 Operation Guidance
+
+For reliable long-running calling:
+
+- Keep Chrome profile persistent and verify login before each dialing batch.
+- Use a conservative `call_cooldown_seconds`.
+- Keep `max_ring_seconds` realistic for your target numbers.
+- Avoid calling the same failed number repeatedly.
+- Watch Groq rate limits and add backoff if you scale call volume.
+- Use a process supervisor or scheduled restart.
+- Rotate logs and archive transcripts.
+- Monitor Google Voice account health manually.
+- Keep manual fallback access to Chrome in case Google requires re-login.
+
+Useful observability upgrades:
+
+- Langfuse for AI prompt/response tracing.
+- OpenTelemetry for process metrics and distributed traces.
+- Silero VAD for stronger speech detection.
+- Deepgram for lower-latency realtime STT.
+
+Heavier tools are not automatically better:
+
+- WhisperX is excellent for offline/recorded transcription, but it is usually too heavy for low-latency live calls.
+- pyannote-audio helps with speaker diarization, but it adds GPU/CPU cost and is not required for basic two-party calls.
+- LiveKit is powerful realtime voice infrastructure, but adopting it would be an architecture change. Use it only if you move away from browser-based Google Voice automation.
+
+## Troubleshooting
+
+Call ends while still ringing:
+
+- Check `min_ring_seconds`.
+- Check the detailed `detect_call_state()` logs.
+- Confirm Google Voice DOM has not changed.
+- Confirm no stale ended-call banner is being mistaken for the active call.
+
+AI talks before pickup:
+
+- Confirm connected evidence is logged before conversation starts.
+- Run `--safe-test` and inspect state transition logs.
+
+Voicemail triggers too early:
+
+- Confirm voicemail cues are ignored during ringing.
+- Confirm voicemail is detected only after connected state or clear greeting/beep evidence.
+
+No audio into Google Voice:
+
+- Check Chrome microphone is set to `CABLE Output`.
+- Check agent playback is set to `CABLE Input`.
+- Run `--audio-route-test`.
+
+Agent hears itself:
+
+- Avoid `CAPTURE_DEVICE=default` for unattended runs.
+- Use a dedicated capture path for remote call audio.
+
+Chrome login expires:
+
+- Open the configured Chrome profile manually.
+- Log into Google Voice again.
+- Rerun `--preflight`.
+
+## Manual Live-Call Test Checklist
+
+Use a number you own:
+
+1. Run `python -m src.main --preflight`.
+2. Run `python -m src.main --safe-test +15551234567`.
+3. Let the phone ring for several seconds before answering.
+4. Confirm the AI does not speak while ringing.
+5. Answer the call.
+6. Confirm the AI speaks only after connection.
+7. Say a short phrase and confirm it responds naturally.
+8. Repeat once and decline/send to voicemail.
+9. Confirm voicemail is detected only after greeting or beep.
+10. Review `logs/`, transcripts, and call result CSVs.
+
+## Development Notes
+
+Keep changes small around the call-state machine. The browser DOM, call timer, active controls, audio classifier, silence logic, and timeout logic all interact. Tests should cover ringing, connected, voicemail, ended, timeout, and stale-DOM cases whenever that area changes.
+
+Before pushing:
+
+```powershell
+python -m pytest tests -q
+python -m src.main --preflight
+```
