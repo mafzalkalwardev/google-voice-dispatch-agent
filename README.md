@@ -189,6 +189,52 @@ python -m src.web_app
 
 Then open the local URL printed by FastAPI.
 
+## Run It Like A Windows App
+
+Build the desktop EXE:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1
+```
+
+For a faster rebuild after tests already passed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows_exe.ps1 -SkipTests
+```
+
+Build outputs:
+
+- `dist\IndusDispatchConsole.exe`
+- `release\IndusDispatchConsole-portable.zip`
+
+Install desktop and Windows Startup shortcuts:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_windows_shortcuts.ps1
+```
+
+The Desktop shortcut opens the operator console at `http://127.0.0.1:8000/run`.
+The Startup shortcut launches the console automatically when Windows signs in.
+
+To start the app manually:
+
+```powershell
+.\dist\IndusDispatchConsole.exe
+```
+
+To run on another port:
+
+```powershell
+.\dist\IndusDispatchConsole.exe --port 8787
+```
+
+To start at login without opening the browser immediately:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install_windows_shortcuts.ps1 -StartupNoBrowser
+```
+
 ## Web Console
 
 The web console is useful for operations, not required for the console app.
