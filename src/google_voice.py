@@ -37,6 +37,7 @@ MAX_RING_SECONDS_DEFAULT = 45
 VOICEMAIL_DETECT_SECONDS_DEFAULT = 15
 
 logger = logging.getLogger("GoogleVoiceAgent")
+_WDM_LOCK_STALE_SECONDS = 5 * 60
 
 # ---------------------------------------------------------------------------
 # Selector banks — each group is tried in order; first visible match wins
@@ -150,6 +151,74 @@ def _js_click(driver: webdriver.Chrome, element) -> None:
         element.click()
 
 
+def _wdm_lock_path_from_error(exc: BaseException) -> Optional[Path]:
+    match = re.search(r"webdriver-manager lock:\s*(.+)$", str(exc))
+    if match:
+        return Path(match.group(1).strip().strip("'\""))
+    return None
+
+
+def _remove_stale_wdm_lock(lock_path: Path, *, stale_seconds: int = _WDM_LOCK_STALE_SECONDS) -> bool:
+    try:
+        age_seconds = time.time() - lock_path.stat().st_mtime
+    except OSError:
+        return False
+
+    if age_seconds < stale_seconds:
+        logger.warning(
+            "webdriver-manager lock is still fresh (%ds old): %s",
+            int(age_seconds),
+            lock_path,
+        )
+        return False
+
+    try:
+        lock_path.unlink()
+        logger.warning("Removed stale webdriver-manager lock: %s", lock_path)
+        return True
+    except OSError as cleanup_exc:
+        logger.warning(
+            "Could not remove stale webdriver-manager lock %s: %s",
+            lock_path,
+            cleanup_exc,
+        )
+        return False
+
+
+def _install_chromedriver_with_retry() -> Optional[str]:
+    if not _USE_WDM:
+        return None
+
+    manager = ChromeDriverManager()
+    try:
+        return manager.install()
+    except TimeoutError as exc:
+        lock_path = _wdm_lock_path_from_error(exc)
+        if lock_path and _remove_stale_wdm_lock(lock_path):
+            logger.info("Retrying ChromeDriver install after stale lock cleanup")
+            return ChromeDriverManager().install()
+        logger.warning(
+            "webdriver-manager timed out waiting for its lock; falling back to Selenium Manager: %s",
+            exc,
+        )
+    except Exception as exc:
+        logger.warning(
+            "webdriver-manager could not install ChromeDriver; falling back to Selenium Manager: %s",
+            exc,
+        )
+    return None
+
+
+def _create_chrome_driver(options: Options) -> webdriver.Chrome:
+    driver_path = _install_chromedriver_with_retry()
+    if driver_path:
+        return webdriver.Chrome(service=Service(driver_path), options=options)
+
+    # Selenium Manager can resolve/download a matching ChromeDriver without
+    # using webdriver-manager's global lock file.
+    return webdriver.Chrome(options=options)
+
+
 class GoogleVoiceBrowser:
     def __init__(self, profile_name: str = "sales_profile", headless: bool = False):
         self.profile_dir = BASE_DIR / "chrome_profiles" / profile_name
@@ -190,11 +259,7 @@ class GoogleVoiceBrowser:
             opts.add_argument("--use-fake-ui-for-media-stream")
             opts.add_argument("--use-fake-device-for-media-stream")
 
-        if _USE_WDM:
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=opts)
-        else:
-            self.driver = webdriver.Chrome(options=opts)
+        self.driver = _create_chrome_driver(opts)
 
         self.driver.execute_script(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"

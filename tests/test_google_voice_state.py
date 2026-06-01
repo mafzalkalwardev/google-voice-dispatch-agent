@@ -10,12 +10,19 @@ Critical invariants:
   4. Audio must never fall back to default speakers during a live call.
   5. Number input selectors must not match the global search box.
 """
+import os
+import time
+import uuid
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.call_session import CallSession, CallState
-from src.google_voice import GoogleVoiceBrowser, _SEL
+from src.google_voice import (
+    GoogleVoiceBrowser,
+    _SEL,
+    _install_chromedriver_with_retry,
+    _remove_stale_wdm_lock,
+)
 
 
 def _make_browser() -> GoogleVoiceBrowser:
@@ -441,3 +448,41 @@ class TestAudioFallback:
         assert result is False, (
             "_play_audio must not call play_wav_loopback when loopback_available=False"
         )
+
+
+class TestChromeDriverInstall:
+
+    def _lock_path(self) -> Path:
+        scratch = Path("test_tmp") / "wdm_lock_tests"
+        scratch.mkdir(parents=True, exist_ok=True)
+        return scratch / f"{uuid.uuid4().hex}.lock"
+
+    def test_stale_webdriver_manager_lock_is_removed_and_install_retried(self):
+        lock_path = self._lock_path()
+        lock_path.write_text("locked")
+        old_mtime = time.time() - 600
+        os.utime(lock_path, (old_mtime, old_mtime))
+
+        first_manager = MagicMock()
+        first_manager.install.side_effect = TimeoutError(
+            f"Timed out waiting for webdriver-manager lock: {lock_path}"
+        )
+        second_manager = MagicMock()
+        second_manager.install.return_value = "chromedriver.exe"
+
+        with patch("src.google_voice._USE_WDM", True), \
+             patch("src.google_voice.ChromeDriverManager", side_effect=[first_manager, second_manager]):
+            assert _install_chromedriver_with_retry() == "chromedriver.exe"
+
+        assert not lock_path.exists()
+        second_manager.install.assert_called_once()
+
+    def test_fresh_webdriver_manager_lock_is_left_for_selenium_manager_fallback(self):
+        lock_path = self._lock_path()
+        lock_path.write_text("locked")
+
+        try:
+            assert _remove_stale_wdm_lock(lock_path, stale_seconds=300) is False
+            assert lock_path.exists()
+        finally:
+            lock_path.unlink(missing_ok=True)
