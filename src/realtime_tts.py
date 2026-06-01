@@ -25,7 +25,7 @@ import logging
 import tempfile
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -48,12 +48,14 @@ class RealtimeTTS:
         voice: str = VOICE_GUY,
         use_edge_tts: bool = True,
         use_cache: bool = True,
+        audio_observer: Optional[Callable[[np.ndarray, int], None]] = None,
     ):
         self.device_index = device_index
         self.voice = voice
         self._use_edge = use_edge_tts and _edge_available()
         self._lock = threading.Lock()
         self._speaking = threading.Event()
+        self._audio_observer = audio_observer
 
         # TTS cache — pre-warms common phrases so first-word latency is minimal
         self._cache: Optional["TTSCache"] = None  # type: ignore[name-defined]
@@ -111,6 +113,10 @@ class RealtimeTTS:
     def is_speaking(self) -> bool:
         return self._speaking.is_set()
 
+    def set_audio_observer(self, callback: Optional[Callable[[np.ndarray, int], None]]) -> None:
+        """Receive synthesized Tony audio when playback starts."""
+        self._audio_observer = callback
+
     # ------------------------------------------------------------------ #
     # Internal
     # ------------------------------------------------------------------ #
@@ -123,6 +129,7 @@ class RealtimeTTS:
                 logger.info("RealtimeTTS: serving '%s' from cache (%d bytes)", text[:40], len(cached_bytes))
                 try:
                     data, rate = _decode_mp3(cached_bytes)
+                    self._notify_audio_observer(data, rate)
                     _play_numpy_to_device(data, rate, self.device_index)
                     return
                 except Exception as exc:
@@ -141,10 +148,25 @@ class RealtimeTTS:
                     rate,
                     duration,
                 )
+                self._notify_audio_observer(data, rate)
                 _play_numpy_to_device(data, rate, self.device_index)
                 return
         logger.info("RealtimeTTS: generating fallback TTS WAV with pyttsx3 (%d chars)", len(text))
-        _pyttsx3_to_device(text, self.device_index)
+        _pyttsx3_to_device(text, self.device_index, self._audio_observer)
+
+    def _notify_audio_observer(self, data: np.ndarray, samplerate: int) -> None:
+        callback = self._audio_observer
+        if not callable(callback):
+            return
+        audio = np.asarray(data, dtype=np.float32).copy()
+
+        def _run() -> None:
+            try:
+                callback(audio, int(samplerate))
+            except Exception as exc:
+                logger.debug("RealtimeTTS audio observer failed: %s", exc)
+
+        threading.Thread(target=_run, daemon=True, name="TTSRecordingObserver").start()
 
 
 def validate_tts_output_device(device_index: int) -> None:
@@ -233,7 +255,11 @@ def _decode_mp3(mp3_bytes: bytes) -> tuple[np.ndarray, int]:
 # pyttsx3 fallback
 # ------------------------------------------------------------------ #
 
-def _pyttsx3_to_device(text: str, device_index: int) -> None:
+def _pyttsx3_to_device(
+    text: str,
+    device_index: int,
+    audio_observer: Optional[Callable[[np.ndarray, int], None]] = None,
+) -> None:
     """Synthesise via pyttsx3 to a temp WAV, then play to target device."""
     from src.tts import save_text_to_speech
     from src.voice_playback import play_wav_to_device
@@ -243,6 +269,17 @@ def _pyttsx3_to_device(text: str, device_index: int) -> None:
     try:
         save_text_to_speech(text, tmp)
         logger.info("RealtimeTTS: TTS file generated for playback: %s", tmp)
+        if callable(audio_observer):
+            try:
+                import soundfile as sf
+                data, rate = sf.read(str(tmp), dtype="float32")
+                threading.Thread(
+                    target=lambda: audio_observer(np.asarray(data, dtype=np.float32), int(rate)),
+                    daemon=True,
+                    name="TTSRecordingObserver",
+                ).start()
+            except Exception as exc:
+                logger.debug("RealtimeTTS fallback audio observer failed: %s", exc)
         play_wav_to_device(tmp, device_index, block=True)
     finally:
         tmp.unlink(missing_ok=True)

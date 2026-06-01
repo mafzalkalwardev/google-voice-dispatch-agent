@@ -416,12 +416,49 @@ class TestSelectorHelpers:
         """dial_number must call _open_calls_page before touching the number input."""
         browser = _make_browser()
 
-        with patch.object(browser, "_open_calls_page", return_value=False) as mock_open, \
+        with patch.object(browser, "_reset_for_new_call"), \
+             patch.object(browser, "_open_calls_page", return_value=False) as mock_open, \
              patch.object(browser, "_focus_driver", return_value=True):
             result = browser.dial_number("+15550000001", connect_timeout=5)
 
         mock_open.assert_called_once()
         assert result is False, "_open_calls_page returning False must abort dialing"
+
+    def test_click_call_start_button_skips_new_call_button(self):
+        browser = _make_browser()
+        new_call = MagicMock()
+        new_call.is_displayed.return_value = True
+        new_call.is_enabled.return_value = True
+        new_call.get_attribute.side_effect = lambda attr: "New call" if attr == "aria-label" else ""
+        new_call.text = ""
+
+        call = MagicMock()
+        call.is_displayed.return_value = True
+        call.is_enabled.return_value = True
+        call.get_attribute.side_effect = lambda attr: "Call" if attr == "aria-label" else ""
+        call.text = ""
+
+        browser.driver.find_elements.return_value = [new_call, call]
+
+        assert browser._click_call_start_button(timeout=0.05) is True
+        new_call.click.assert_not_called()
+        browser.driver.execute_script.assert_called_once()
+        assert browser.driver.execute_script.call_args.args[1] is call
+
+    def test_dial_number_requires_outbound_call_surface_after_click(self):
+        browser = _make_browser()
+        number_input = MagicMock()
+        number_input.get_attribute.return_value = "+15550000001"
+
+        with patch.object(browser, "_focus_driver", return_value=True), \
+             patch.object(browser, "_reset_for_new_call"), \
+             patch.object(browser, "_open_calls_page", return_value=True), \
+             patch.object(browser, "_find_first", side_effect=[number_input, number_input]), \
+             patch.object(browser, "_click_call_start_button", return_value=True), \
+             patch.object(browser, "_wait_for_outbound_call_surface", return_value=False):
+            result = browser.dial_number("+15550000001", connect_timeout=5)
+
+        assert result is False
 
 
 class TestAudioFallback:

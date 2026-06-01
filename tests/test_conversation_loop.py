@@ -3,6 +3,7 @@
 import queue
 import threading
 import time
+import wave
 import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -207,6 +208,28 @@ def test_drain_clears_queue():
         q.put(i)
     _drain(q)
     assert q.empty()
+
+
+def test_mixed_recording_includes_tony_audio_without_extending_overlap(tmp_path):
+    loop, _, _, _ = _make_loop()
+    recording_path = tmp_path / "mixed.wav"
+    loop._recording_path = recording_path
+    loop._open_recording()
+
+    inbound_silence = np.zeros(16000, dtype=np.float32)
+    tony_audio = np.ones(16000, dtype=np.float32) * 0.25
+
+    loop._record_audio_segment(inbound_silence, 16000, offset_seconds=0.0)
+    loop._record_audio_segment(tony_audio, 16000, offset_seconds=0.0)
+    loop._close_recording()
+
+    with wave.open(str(recording_path), "rb") as wf:
+        assert wf.getframerate() == 16000
+        assert wf.getnchannels() == 1
+        assert wf.getnframes() == 16000
+        pcm = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+
+    assert np.max(np.abs(pcm)) > 0
 
 
 def test_in_takeover_false_initially():

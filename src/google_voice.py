@@ -70,7 +70,7 @@ _SEL = {
         "input[type='tel']",
     ],
     "call_button": [
-        'button[aria-label*="call" i]:not([aria-label*="end" i]):not([aria-label*="video" i])',
+        'button[aria-label*="call" i]:not([aria-label*="new" i]):not([aria-label*="end" i]):not([aria-label*="hang" i]):not([aria-label*="video" i])',
         "gv-icon-button[icon-name='call']",
         '[data-action="call"]',
         "button.call-button",
@@ -125,6 +125,14 @@ _SEL = {
         '[aria-label*="Call ended" i]',
         "[data-e2eid='call-ended']",
         ".call-ended",
+    ],
+    "dismiss_button": [
+        'button[aria-label*="close" i]',
+        'button[aria-label*="dismiss" i]',
+        'button[aria-label*="cancel" i]',
+        'button[title*="close" i]',
+        'button[title*="dismiss" i]',
+        'button[title*="cancel" i]',
     ],
 }
 
@@ -351,6 +359,57 @@ class GoogleVoiceBrowser:
             time.sleep(0.3)
         return False
 
+    def _element_text(self, element) -> str:
+        parts: list[str] = []
+        for attr in ("aria-label", "title", "data-e2eid", "icon-name"):
+            try:
+                value = element.get_attribute(attr)
+            except WebDriverException:
+                value = ""
+            if value:
+                parts.append(str(value))
+        try:
+            text = getattr(element, "text", "")
+        except WebDriverException:
+            text = ""
+        if text:
+            parts.append(str(text))
+        return " ".join(parts).strip()
+
+    def _click_call_start_button(self, timeout: float = 8.0) -> bool:
+        """
+        Click the real outbound-call button, not Google Voice's "New call" FAB.
+
+        Google Voice exposes several controls whose labels contain "call". A
+        broad selector can accidentally click "New call" after the number is
+        already typed, leaving the run thinking it dialed when it did not.
+        """
+        selectors = _SEL.get("call_button", [])
+        deadline = time.time() + timeout
+        blocked = ("new call", "end call", "hang up", "hangup", "video call")
+        wanted = ("call", "phone", "dial")
+        while time.time() < deadline:
+            for sel in selectors:
+                try:
+                    els = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                except WebDriverException:
+                    continue
+                for el in els:
+                    try:
+                        if not (el.is_displayed() and el.is_enabled()):
+                            continue
+                        label = self._element_text(el).lower()
+                        if any(term in label for term in blocked):
+                            continue
+                        if label and not any(term in label for term in wanted):
+                            continue
+                        _js_click(self.driver, el)
+                        return True
+                    except WebDriverException:
+                        continue
+            time.sleep(0.3)
+        return False
+
     def _set_input_value(self, element, value: str) -> None:
         """Set input text using native events when normal send_keys is blocked."""
         self.driver.execute_script(
@@ -377,22 +436,15 @@ class GoogleVoiceBrowser:
     def _open_calls_page(self) -> bool:
         """Navigate to the Calls view where the keypad number input exists."""
         try:
-            if "/calls" in (self.driver.current_url or ""):
-                return True
-        except WebDriverException:
-            return False
-
-        if self._click_first("calls_tab", timeout=5):
-            time.sleep(2.0)
-            return True
-
-        try:
             self.driver.get(f"{GV_URL}/u/0/calls")
-            time.sleep(3.0)
+            time.sleep(2.0)
             return "/calls" in (self.driver.current_url or "")
         except WebDriverException as exc:
             logger.warning("Could not open Google Voice Calls page: %s", exc)
-            return False
+        if self._click_first("calls_tab", timeout=5):
+            time.sleep(2.0)
+            return True
+        return False
 
     def _any_present(self, group: str) -> bool:
         for sel in _SEL.get(group, []):
@@ -582,6 +634,30 @@ class GoogleVoiceBrowser:
     # Dialing
     # ------------------------------------------------------------------
 
+    def _active_call_surface_present(self) -> bool:
+        return self._any_present("call_active") or bool(self._answered_controls_present()[0])
+
+    def _wait_for_outbound_call_surface(self, timeout: float = 8.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._active_call_surface_present():
+                return True
+            time.sleep(0.3)
+        return False
+
+    def _reset_for_new_call(self) -> None:
+        """Return Google Voice to a clean Calls page before dialing."""
+        if self._active_call_surface_present():
+            logger.info("Existing Google Voice call surface detected before dialing; hanging up")
+            self.hangup_call()
+            time.sleep(1.5)
+        try:
+            self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
+            time.sleep(0.2)
+        except WebDriverException:
+            pass
+        self._click_first("dismiss_button", timeout=0.8)
+
     def dial_number(self, phone: str, connect_timeout: int = 30) -> bool:
         if not self.driver:
             raise RuntimeError("Browser is not launched")
@@ -589,6 +665,7 @@ class GoogleVoiceBrowser:
         if not self._focus_driver():
             return False
         time.sleep(0.5)
+        self._reset_for_new_call()
 
         if not self._open_calls_page():
             logger.warning("Could not open Google Voice Calls page for %s", phone)
@@ -613,7 +690,19 @@ class GoogleVoiceBrowser:
                 continue
 
         if not opened:
-            logger.warning("Could not find dialpad button for %s", phone)
+            # Last-resort reset: Google Voice can leave a stale surface after a
+            # previous call. Reload /calls once, then try the new-call control.
+            logger.info("Dialpad not available; refreshing Calls page before retrying %s", phone)
+            if self._open_calls_page():
+                time.sleep(1.0)
+                opened = self._find_first("number_input", timeout=2) is not None
+                if not opened:
+                    opened = self._click_first("dialpad_open", timeout=5)
+                    if opened:
+                        time.sleep(1.2)
+
+        if not opened:
+            logger.warning("Could not open Google Voice new-call dialpad for %s", phone)
             return False
 
         # Type the number
@@ -637,8 +726,23 @@ class GoogleVoiceBrowser:
                 return False
         time.sleep(0.8)
 
+        try:
+            typed_value = (number_input.get_attribute("value") or "").strip()
+            typed_digits = "".join(ch for ch in typed_value if ch.isdigit())
+            phone_digits = "".join(ch for ch in phone if ch.isdigit())
+            if phone_digits and typed_digits[-len(phone_digits):] != phone_digits:
+                logger.warning(
+                    "Google Voice number input did not retain %s (value=%r); retrying DOM input",
+                    phone,
+                    typed_value,
+                )
+                self._set_input_value(number_input, phone)
+                time.sleep(0.5)
+        except WebDriverException as exc:
+            logger.debug("Could not verify typed Google Voice number: %s", exc)
+
         # Click call button
-        called = self._click_first("call_button", timeout=8)
+        called = self._click_call_start_button(timeout=8)
         if called:
             time.sleep(2)
 
@@ -650,7 +754,11 @@ class GoogleVoiceBrowser:
             except WebDriverException:
                 return False
 
-        return called
+        if not self._wait_for_outbound_call_surface(timeout=min(8.0, max(3.0, connect_timeout / 4.0))):
+            logger.warning("Dial action did not produce an active Google Voice call surface for %s", phone)
+            return False
+
+        return True
 
     # ------------------------------------------------------------------
     # Call state detection — drives the CallSession state machine

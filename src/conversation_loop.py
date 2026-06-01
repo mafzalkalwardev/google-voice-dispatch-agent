@@ -115,7 +115,16 @@ class ConversationLoop:
         self._session: Optional[CallSession] = None
         self._transcript_lock = threading.Lock()
         self._recording_lock = threading.Lock()
-        self._recording_wave: Optional[wave.Wave_write] = None
+        self._recording_segments: list[tuple[int, np.ndarray]] = []
+        self._recording_start_monotonic = 0.0
+        self._recording_open = False
+
+        set_audio_observer = getattr(self.tts, "set_audio_observer", None)
+        if callable(set_audio_observer):
+            try:
+                set_audio_observer(self._record_tony_audio)
+            except Exception as exc:
+                logger.debug("[RECORDING] TTS audio observer setup skipped: %s", exc)
 
         self._state_lock = threading.Lock()
         self._diag_lock = threading.Lock()
@@ -453,40 +462,66 @@ class ConversationLoop:
             return
         try:
             self._recording_path.parent.mkdir(parents=True, exist_ok=True)
-            wf = wave.open(str(self._recording_path), "wb")
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(_SAMPLERATE)
-            self._recording_wave = wf
-            logger.info("[RECORDING] incoming call audio path=%s", self._recording_path)
+            with self._recording_lock:
+                self._recording_segments = []
+                self._recording_start_monotonic = time.monotonic()
+                self._recording_open = True
+            logger.info("[RECORDING] mixed call audio path=%s", self._recording_path)
         except OSError as exc:
-            self._recording_wave = None
+            self._recording_open = False
             logger.warning("[RECORDING] setup error: %s", exc)
 
     def _write_recording_frame(self, frame: np.ndarray) -> None:
-        if self._recording_wave is None:
-            return
+        self._record_audio_segment(frame, _SAMPLERATE, offset_seconds=None)
+
+    def _record_tony_audio(self, audio: np.ndarray, samplerate: int) -> None:
+        """Add Tony's synthesized TTS to the mixed call recording timeline."""
+        self._record_audio_segment(audio, samplerate, offset_seconds=None)
+
+    def _record_audio_segment(
+        self,
+        audio: np.ndarray,
+        samplerate: int,
+        *,
+        offset_seconds: Optional[float],
+    ) -> None:
         try:
-            mono = np.asarray(frame, dtype=np.float32)
+            mono = np.asarray(audio, dtype=np.float32)
             if mono.ndim > 1:
                 mono = mono.mean(axis=1)
-            pcm = (np.clip(mono, -1.0, 1.0) * 32767).astype(np.int16)
+            if int(samplerate) != _SAMPLERATE:
+                mono = _resample_mono(mono, int(samplerate), _SAMPLERATE)
+            else:
+                mono = mono.astype(np.float32, copy=True)
             with self._recording_lock:
-                if self._recording_wave is not None:
-                    self._recording_wave.writeframes(pcm.tobytes())
+                if not self._recording_open or not self._recording_start_monotonic:
+                    return
+                if offset_seconds is None:
+                    offset_seconds = time.monotonic() - self._recording_start_monotonic
+                start_sample = max(0, int(round(offset_seconds * _SAMPLERATE)))
+                self._recording_segments.append((start_sample, mono))
         except Exception as exc:
             logger.debug("[RECORDING] frame skipped: %s", exc)
 
     def _close_recording(self) -> None:
         with self._recording_lock:
-            wf = self._recording_wave
-            self._recording_wave = None
-        if wf is not None:
-            try:
-                wf.close()
-                logger.info("[RECORDING] finalized path=%s", self._recording_path)
-            except Exception as exc:
-                logger.warning("[RECORDING] close error: %s", exc)
+            segments = list(self._recording_segments)
+            self._recording_segments = []
+            recording_path = self._recording_path
+            self._recording_open = False
+        if not recording_path:
+            return
+        try:
+            mixed = _mix_recording_segments(segments)
+            pcm = (np.clip(mixed, -1.0, 1.0) * 32767).astype(np.int16)
+            with wave.open(str(recording_path), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(_SAMPLERATE)
+                wf.writeframes(pcm.tobytes())
+            logger.info("[RECORDING] finalized mixed path=%s", recording_path)
+        except Exception as exc:
+            logger.warning("[RECORDING] close error: %s", exc)
 
     def _write_speech_segment(self, audio: np.ndarray) -> str:
         if not self._realtime_debug:
@@ -947,6 +982,37 @@ class ConversationLoop:
 # ------------------------------------------------------------------ #
 # Utilities
 # ------------------------------------------------------------------ #
+
+
+def _resample_mono(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
+    mono = np.asarray(audio, dtype=np.float32)
+    if mono.ndim > 1:
+        mono = mono.mean(axis=1)
+    if source_rate <= 0 or target_rate <= 0 or source_rate == target_rate or len(mono) == 0:
+        return mono.astype(np.float32, copy=True)
+    duration = len(mono) / float(source_rate)
+    target_len = max(1, int(round(duration * target_rate)))
+    old_x = np.linspace(0.0, duration, num=len(mono), endpoint=False)
+    new_x = np.linspace(0.0, duration, num=target_len, endpoint=False)
+    return np.interp(new_x, old_x, mono).astype(np.float32)
+
+
+def _mix_recording_segments(segments: list[tuple[int, np.ndarray]]) -> np.ndarray:
+    if not segments:
+        return np.zeros(0, dtype=np.float32)
+
+    total_samples = max(start + len(audio) for start, audio in segments)
+    mixed = np.zeros(total_samples, dtype=np.float32)
+    for start, audio in segments:
+        if len(audio) == 0:
+            continue
+        end = min(total_samples, start + len(audio))
+        mixed[start:end] += audio[: end - start]
+
+    peak = float(np.max(np.abs(mixed))) if len(mixed) else 0.0
+    if peak > 1.0:
+        mixed = mixed / peak
+    return mixed.astype(np.float32, copy=False)
 
 
 def _drain(q: queue.Queue) -> None:
