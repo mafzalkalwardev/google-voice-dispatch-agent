@@ -77,6 +77,11 @@ class ConversationLoop:
         diagnostics_path: Optional[Path] = None,
         capture_factory: Optional[Callable[..., AudioCapture]] = None,
         voicemail_detect_seconds: float = 15.0,
+        use_thinking_fillers: bool = True,
+        filler_probability: float = 0.7,
+        stream_llm_replies: bool = True,
+        voicemail_play_on_greeting: bool = True,
+        voicemail_greeting_frames_required: int = 6,
     ):
         self.capture_device_hint = capture_device_hint
         self.tts = tts
@@ -155,6 +160,12 @@ class ConversationLoop:
         self._voicemail_detect_seconds = max(0.0, float(voicemail_detect_seconds))
         self._voicemail_check_deadline_monotonic = 0.0
         self._voicemail_detected = False
+        self._use_thinking_fillers = use_thinking_fillers
+        self._filler_probability = max(0.0, min(1.0, float(filler_probability)))
+        self._stream_llm_replies = stream_llm_replies
+        self._voicemail_play_on_greeting = voicemail_play_on_greeting
+        self._vm_greeting_frames_required = max(1, int(voicemail_greeting_frames_required))
+        self._vm_greeting_hits = 0
 
 
     # ------------------------------------------------------------------ #
@@ -184,6 +195,7 @@ class ConversationLoop:
         )
         self._voicemail_detected = False
         self._last_voicemail_classifier_label = ""
+        self._vm_greeting_hits = 0
 
         self._next_silence_log = self._last_speech_activity + self._max_silence_seconds
         self._set_state(STATE_WAITING_FOR_ANSWER, "call connected; starting capture before TTS")
@@ -232,6 +244,8 @@ class ConversationLoop:
                 line = opening_line or self.agent.opening_line()
                 if line:
                     logger.info("[CALL] Tony opening (after answer): %s", line)
+                    if hasattr(self.tts, "prewarm_line"):
+                        self.tts.prewarm_line(line)
                     self._write_transcript("Tony", line)
                     self._play_tts_blocking(line, STATE_SPEAKING_OPENING, "opening")
                 else:
@@ -266,6 +280,21 @@ class ConversationLoop:
     def stop(self) -> None:
         self._response_active.set()
         self._stop_event.set()
+
+    def is_agent_busy(self) -> bool:
+        """True while TTS/LLM/STT work is in progress (ignore transient GV UI gaps)."""
+        busy_states = {
+            STATE_SPEAKING_OPENING,
+            STATE_SPEAKING_REPLY,
+            STATE_THINKING,
+            STATE_TRANSCRIBING,
+        }
+        if self._state in busy_states:
+            return True
+        try:
+            return bool(self.tts.is_speaking())
+        except Exception:
+            return False
 
     def is_stopped(self) -> bool:
         return self._stop_event.is_set()
@@ -647,7 +676,28 @@ class ConversationLoop:
                         self.stop()
                         return
                     if label == "voicemail_greeting":
-                        logger.debug("[VM] Possible voicemail greeting observed; waiting for beep confirmation")
+                        self._vm_greeting_hits += 1
+                        if (
+                            self._voicemail_play_on_greeting
+                            and self._vm_greeting_hits >= self._vm_greeting_frames_required
+                        ):
+                            self._voicemail_detected = True
+                            logger.info(
+                                "[VM] Voicemail greeting pattern confirmed (%d frames); ending loop",
+                                self._vm_greeting_hits,
+                            )
+                            if self._session is not None and not self._session.is_terminal():
+                                try:
+                                    self._session.outcome = "voicemail"
+                                    self._session.transition(
+                                        CallState.VOICEMAIL,
+                                        "voicemail greeting detected (audio)",
+                                    )
+                                except ValueError:
+                                    pass
+                            self.stop()
+                            return
+                        logger.debug("[VM] Possible voicemail greeting (%d/%d)", self._vm_greeting_hits, self._vm_greeting_frames_required)
                 except Exception as exc:
                     logger.debug("[VM] detection frame error: %s", exc)
 
@@ -824,6 +874,18 @@ class ConversationLoop:
                 logger.info("[RESPONSE] segment skipped because TTS is speaking")
                 continue
 
+            import random
+
+            if (
+                self._use_thinking_fillers
+                and random.random() < self._filler_probability
+                and hasattr(self.tts, "play_filler")
+            ):
+                try:
+                    self.tts.play_filler()
+                except Exception as exc:
+                    logger.debug("[RESPONSE] filler skipped: %s", exc)
+
             self._loop_iteration += 1
             duration = len(audio_segment) / float(_SAMPLERATE)
             self._set_state(STATE_TRANSCRIBING, f"audio_duration={duration:.2f}s")
@@ -876,18 +938,38 @@ class ConversationLoop:
             self._write_transcript("Prospect", transcript)
 
             self._set_state(STATE_THINKING, "generating LLM reply")
-            response = self.agent.respond_to(transcript)
+            if self._stream_llm_replies and hasattr(self.agent, "respond_to_streaming"):
+                spoken_parts: list[str] = []
+
+                def _on_clause(clause: str) -> None:
+                    if not clause.strip():
+                        return
+                    spoken_parts.append(clause)
+                    self._write_transcript("Tony", clause)
+                    self._last_tts_text = " ".join(spoken_parts)
+                    # Same TTS path for every sentence — avoids mixed neural + SAPI voices.
+                    self._play_tts_blocking(clause, STATE_SPEAKING_REPLY, "reply")
+
+                response = self.agent.respond_to_streaming(transcript, _on_clause)
+            else:
+                response = self.agent.respond_to(transcript)
+                if not response:
+                    logger.info("[RESPONSE] Empty LLM response; returning to listening")
+                    self._set_state(STATE_LISTENING, "empty LLM response")
+                    continue
+                logger.info("[RESPONSE] Tony: %s", response)
+                self._write_transcript("Tony", response)
+                self._last_tts_text = response
+                self._play_tts_async_like(response, STATE_SPEAKING_REPLY, "reply")
+
             if not response:
                 logger.info("[RESPONSE] Empty LLM response; returning to listening")
                 self._set_state(STATE_LISTENING, "empty LLM response")
                 continue
 
-            logger.info("[RESPONSE] Tony: %s", response)
-            self._write_transcript("Tony", response)
-            # Reply path: prefer speak_async so unit tests can assert it.
-            # Store last TTS for self-talk suppression.
-            self._last_tts_text = response
-            self._play_tts_async_like(response, STATE_SPEAKING_REPLY, "reply")
+            logger.info("[RESPONSE] Tony (full): %s", response)
+            if self._stream_llm_replies and hasattr(self.agent, "respond_to_streaming"):
+                self._last_tts_text = response
 
 
             if self.agent.should_end_call():

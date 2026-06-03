@@ -1,7 +1,9 @@
 import logging
 import time
 
-from groq import Groq
+from groq import Groq  # re-export for tests that patch src.ai_groq.Groq
+
+from src.groq_pool import GroqKeyPool, get_groq_pool, load_groq_api_keys
 
 logger = logging.getLogger("GoogleVoiceAgent")
 
@@ -17,7 +19,7 @@ _CALL_SCRIPT_SYSTEM = (
     "soft skepticism bridge (e.g., acknowledge they may already have dispatch covered). "
     "Do not use labels, stage directions, bullets, or quotation marks. "
     "Do not guarantee earnings, do not invent facts, and do not sound pushy. "
-    "Keep the full spoken script under 95 words."
+    "Keep the full spoken script under 75 words. Sound like a real person on the phone."
 )
 
 _VOICEMAIL_SYSTEM = (
@@ -26,7 +28,8 @@ _VOICEMAIL_SYSTEM = (
     "70 words. Include: brief greeting with agent name and company, specific reason "
     "for calling tied to the carrier's equipment type if known, one concrete value "
     "offer (load finding, rate negotiation, or paperwork), and callback number stated "
-    "twice. Sound warm, direct, and credible. Do not guarantee earnings or specific rates."
+    "twice. Sound warm, direct, and credible like a human. Under 65 words. "
+    "Do not guarantee earnings or specific rates."
 )
 
 _EQUIPMENT_CONTEXT: dict[str, str] = {
@@ -79,25 +82,51 @@ _EQUIPMENT_CONTEXT: dict[str, str] = {
 
 
 class GroqAgent:
-    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
-        if not api_key:
+    def __init__(
+        self,
+        api_key: str = "",
+        model: str = "llama-3.3-70b-versatile",
+        *,
+        pool: GroqKeyPool | None = None,
+    ):
+        if pool is not None:
+            self._pool = pool
+        elif api_key:
+            self._pool = GroqKeyPool([api_key.strip()])
+        elif load_groq_api_keys():
+            self._pool = get_groq_pool()
+        else:
             raise ValueError("api_key is required for GroqAgent")
-        self._client = Groq(api_key=api_key)
         self.model = model
 
-    def _complete(self, system: str, user: str, max_tokens: int = 512) -> str:
+    _CALL_FALLBACK = (
+        "Hi, this is Tony with Indus Transports LLC. "
+        "I'm calling because we help carriers keep dispatch moving with less "
+        "broker paperwork delays and more consistent load options. "
+        "Are you currently running Dry Van, Reefer, or Flatbed?"
+    )
+    _VOICEMAIL_FALLBACK = (
+        "Hi, this is Tony with Indus Transports LLC. "
+        "I'm following up about dedicated dispatch support for your trucking operation. "
+        "We help with load finding, rate negotiation, and paperwork. "
+        "Please call us back at the number on your caller ID. Thanks."
+    )
+
+    def _complete(
+        self,
+        system: str,
+        user: str,
+        max_tokens: int = 512,
+        *,
+        fallback: str | None = None,
+    ) -> str:
         """Call Groq with simple retry/backoff on rate-limit errors.
 
         If the API fails even after retries, return a safe fallback so the
         dialing loop doesn't crash or go silent.
         """
 
-        fallback = (
-            "Hi, this is Tony with Indus Transports LLC. "
-            "I’m calling because we help carriers keep dispatch moving with less "
-            "broker paperwork delays and more consistent load options. "
-            "Are you currently running Dry Van, Reefer, or Flatbed?"
-        )
+        fallback_text = fallback or self._CALL_FALLBACK
 
 
         delays = [2, 5, 10]
@@ -105,20 +134,22 @@ class GroqAgent:
 
         for attempt in range(3):
             try:
-                response = self._client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    max_tokens=max_tokens,
-                    temperature=0.72,
+                response = self._pool.execute(
+                    lambda client: client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                        max_tokens=max_tokens,
+                        temperature=0.72,
+                    )
                 )
                 text = response.choices[0].message.content.strip()
                 if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
                     text = text[1:-1].strip()
                 return text
-            except Exception as exc:  # groq raises library-specific exceptions
+            except Exception as exc:
                 last_exc = exc
                 msg = str(exc).lower()
                 is_rate_limited = (
@@ -141,11 +172,10 @@ class GroqAgent:
                     time.sleep(delay_s)
                     continue
 
-                # Non-rate-limit errors (or last attempt) — break to fallback.
                 break
 
         logger.error("Groq completion failed; using fallback. Error: %s", last_exc)
-        return fallback
+        return fallback_text
 
 
     def generate_call_script(
@@ -202,4 +232,9 @@ class GroqAgent:
             f"{equipment_block} "
             f"Callback number: {callback_number}."
         )
-        return self._complete(_VOICEMAIL_SYSTEM, user_prompt, max_tokens=180)
+        return self._complete(
+            _VOICEMAIL_SYSTEM,
+            user_prompt,
+            max_tokens=180,
+            fallback=self._VOICEMAIL_FALLBACK,
+        )

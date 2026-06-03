@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -44,8 +45,13 @@ class CallSession:
     notes: list[str] = field(default_factory=list)
     transcript_path: Optional[Path] = None
     recording_path: Optional[Path] = None
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     def transition(self, new_state: CallState, note: str = "") -> None:
+        with self._lock:
+            self._transition_unlocked(new_state, note)
+
+    def _transition_unlocked(self, new_state: CallState, note: str = "") -> None:
         allowed = _ALLOWED.get(self.state, set())
         if new_state not in allowed:
             raise ValueError(
@@ -67,7 +73,8 @@ class CallSession:
             self.notes.append(note)
 
     def is_terminal(self) -> bool:
-        return self.state in (CallState.ENDED, CallState.FAILED)
+        with self._lock:
+            return self.state in (CallState.ENDED, CallState.FAILED)
 
     def connected_duration_seconds(self) -> Optional[float]:
         if self.connected_at is None or self.ended_at is None:

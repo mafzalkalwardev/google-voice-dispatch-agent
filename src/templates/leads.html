@@ -147,9 +147,10 @@
 
 <!-- Add / Edit Modal -->
 <div class="modal-backdrop" id="leadModal" style="display:none" onclick="if(event.target===this)closeModal()">
-  <div class="modal modal--wide">
+  <div class="modal modal--wide modal--lead-form">
     <h3 class="modal-title" id="modalTitle">Add Lead</h3>
     <form id="leadForm" onsubmit="submitLead(event)">
+      <div class="lead-modal-body">
       <div class="form-grid">
         <div class="form-group">
           <label>Contact Name</label>
@@ -254,7 +255,8 @@
           <textarea name="best_follow_up_strategy" rows="2" placeholder="Lead with strongest lane and pricing discussion"></textarea>
         </div>
       </div>
-      <div class="form-actions">
+      </div>
+      <div class="form-actions lead-modal-actions">
         <button type="submit" class="btn btn-primary">Save Lead</button>
         <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
         <span class="form-actions-hint" id="modalMsg"></span>

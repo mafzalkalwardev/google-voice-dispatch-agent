@@ -212,9 +212,9 @@ Common `.env` values:
 
 ```env
 GROQ_API_KEY=your_key_here
-GOOGLE_VOICE_URL=https://voice.google.com/u/0/calls
-CHROME_PROFILE_DIR=chrome_profiles/sales_profile
-PLAYBACK_DEVICE=CABLE Input
+# Optional failover (separate Groq accounts): GROQ_API_KEY_2=... GROQ_API_KEY_3=...
+PROFILE_NAME=sales_profile
+LOOPBACK_DEVICE=CABLE Input
 CAPTURE_DEVICE=default
 CALLBACK_NUMBER=your_callback_number
 ```
@@ -227,6 +227,8 @@ Common `dialer_config.json` values:
   "max_ring_seconds": 45,
   "voicemail_detect_seconds": 15,
   "silence_does_not_end_call": true,
+  "use_stt_context": true,
+  "max_silence_seconds": 8,
   "call_cooldown_seconds": 10,
   "tts_warmup": true,
   "stt_retry_count": 2,
@@ -284,6 +286,18 @@ Start normal calling:
 
 ```powershell
 python -m src.main
+```
+
+Resume a partially completed list (skips numbers already dialed in the last run):
+
+```powershell
+python -m src.main
+```
+
+Start fresh on the same list:
+
+```powershell
+python -m src.main --reset-batch-progress
 ```
 
 Start the web console:

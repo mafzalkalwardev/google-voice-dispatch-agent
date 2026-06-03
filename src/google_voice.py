@@ -31,10 +31,12 @@ from src.call_session import CallSession, CallState
 BASE_DIR = runtime_base()
 GV_URL = "https://voice.google.com"
 
-# Ring/answer timing defaults for call state machine
-MIN_RING_SECONDS_DEFAULT = 25
-MAX_RING_SECONDS_DEFAULT = 45
-VOICEMAIL_DETECT_SECONDS_DEFAULT = 15
+# Ring/answer timing defaults for call state machine (aligned with config.py)
+MIN_RING_SECONDS_DEFAULT = 2.0
+MAX_RING_SECONDS_DEFAULT = 45.0
+VOICEMAIL_DETECT_SECONDS_DEFAULT = 15.0
+# Cap DOM voicemail scan after answer so realtime does not wait the full 15s window
+POST_CONNECT_VOICEMAIL_SCAN_CAP_SECONDS = 2.0
 
 logger = logging.getLogger("GoogleVoiceAgent")
 _WDM_LOCK_STALE_SECONDS = 5 * 60
@@ -134,7 +136,23 @@ _SEL = {
         'button[title*="dismiss" i]',
         'button[title*="cancel" i]',
     ],
+    "screening_input": [
+        'input[aria-label*="name" i]',
+        'input[placeholder*="name" i]',
+        'textarea[aria-label*="reason" i]',
+        'textarea[placeholder*="reason" i]',
+    ],
 }
+
+_SCREENING_PAGE_PHRASES = (
+    "screening service",
+    "record your name",
+    "reason for calling",
+    "state your name",
+    "who's calling",
+    "say your name",
+    "purpose of your call",
+)
 
 _VOICEMAIL_PAGE_PHRASES = [
     "leave a message",
@@ -228,9 +246,15 @@ def _create_chrome_driver(options: Options) -> webdriver.Chrome:
 
 
 class GoogleVoiceBrowser:
-    def __init__(self, profile_name: str = "sales_profile", headless: bool = False):
+    def __init__(
+        self,
+        profile_name: str = "sales_profile",
+        headless: bool = False,
+        avoid_page_reload: bool = True,
+    ):
         self.profile_dir = BASE_DIR / "chrome_profiles" / profile_name
         self.headless = headless
+        self.avoid_page_reload = avoid_page_reload
         self.driver: Optional[webdriver.Chrome] = None
 
     # ------------------------------------------------------------------
@@ -282,6 +306,19 @@ class GoogleVoiceBrowser:
             except WebDriverException:
                 pass
             self.driver = None
+
+    def recover_session(self, login_timeout: float = 120.0) -> bool:
+        """Restart Chrome after a WebDriver failure. Returns True if logged in."""
+        logger.warning("Recovering Google Voice browser session after WebDriver error")
+        self.close()
+        try:
+            self.launch()
+        except WebDriverException as exc:
+            logger.error("Browser relaunch failed: %s", exc)
+            return False
+        if self.is_logged_in():
+            return True
+        return self.wait_for_manual_login(timeout=login_timeout)
 
     def _focus_driver(self) -> bool:
         if not self.driver:
@@ -433,16 +470,27 @@ class GoogleVoiceBrowser:
             value,
         )
 
-    def _open_calls_page(self) -> bool:
+    def _open_calls_page(self, *, force_reload: bool = False) -> bool:
         """Navigate to the Calls view where the keypad number input exists."""
+        if self.driver and self.avoid_page_reload and not force_reload:
+            try:
+                url = self.driver.current_url or ""
+                if "/calls" in url:
+                    if self._find_first("number_input", timeout=1):
+                        return True
+                    if self._click_first("dialpad_open", timeout=1):
+                        time.sleep(0.8)
+                        return True
+            except WebDriverException:
+                pass
         try:
             self.driver.get(f"{GV_URL}/u/0/calls")
-            time.sleep(2.0)
+            time.sleep(1.5)
             return "/calls" in (self.driver.current_url or "")
         except WebDriverException as exc:
             logger.warning("Could not open Google Voice Calls page: %s", exc)
         if self._click_first("calls_tab", timeout=5):
-            time.sleep(2.0)
+            time.sleep(1.0)
             return True
         return False
 
@@ -690,11 +738,9 @@ class GoogleVoiceBrowser:
                 continue
 
         if not opened:
-            # Last-resort reset: Google Voice can leave a stale surface after a
-            # previous call. Reload /calls once, then try the new-call control.
-            logger.info("Dialpad not available; refreshing Calls page before retrying %s", phone)
-            if self._open_calls_page():
-                time.sleep(1.0)
+            logger.info("Dialpad not available; reopening Calls surface before retrying %s", phone)
+            if self._open_calls_page(force_reload=not self.avoid_page_reload):
+                time.sleep(0.8)
                 opened = self._find_first("number_input", timeout=2) is not None
                 if not opened:
                     opened = self._click_first("dialpad_open", timeout=5)
@@ -808,6 +854,7 @@ class GoogleVoiceBrowser:
 
 
         ctrl_consecutive = 0
+        answered_in_this_detect_call = False
         if session.state == CallState.CONNECTED and session.connected_at is not None:
             answered_ts: float | None = session.connected_at.timestamp()
         elif session.state == CallState.CONNECTED:
@@ -857,10 +904,10 @@ class GoogleVoiceBrowser:
                 if answered_gate and timer_present:
                     logger.info("ANSWERED: call timer detected after %.1fs: %s", elapsed, timer_evidence)
                     answered_ts = now
+                    answered_in_this_detect_call = True
                     session.transition(CallState.CONNECTED, f"answered: call timer visible: {timer_evidence}")
-                    return CallState.CONNECTED
 
-                if answered_gate and ctrl_present:
+                elif answered_gate and ctrl_present:
                     ctrl_consecutive += 1
                     if ctrl_consecutive >= ctrl_confirm_polls:
                         reason = (
@@ -869,8 +916,8 @@ class GoogleVoiceBrowser:
                         )
                         logger.info("ANSWERED: %s", reason)
                         answered_ts = now
+                        answered_in_this_detect_call = True
                         session.transition(CallState.CONNECTED, reason)
-                        return CallState.CONNECTED
                 elif not answered_gate and (timer_present or ctrl_present):
                     logger.info(
                         "ANSWERED evidence seen before min ring; holding in RINGING "
@@ -889,52 +936,57 @@ class GoogleVoiceBrowser:
                         )
                     ctrl_consecutive = 0
 
-                # ---------------- VOICEMAIL/ENDED only when ANSWERED begins ----------------
-                # During ringing, explicitly do NOT declare voicemail.
-                if voicemail_cue or voicemail_page:
-                    logger.info(
-                        "RINGING: ignoring voicemail cue before answered evidence "
-                        "(elapsed=%.1fs dom=%s page=%s)",
-                        elapsed,
-                        voicemail_cue,
-                        voicemail_page,
-                    )
-                if ended_banner and elapsed < float(min_ring_seconds):
-                    logger.info(
-                        "RINGING: ignoring call-ended banner before min ring "
-                        "(elapsed=%.1fs min=%.1fs)",
-                        elapsed,
-                        float(min_ring_seconds),
-                    )
-                elif ended_banner:
-                    session.transition(CallState.ENDED, "call-ended banner detected after min ring")
-                    logger.info(
-                        "ENDED: call-ended banner after %.1fs while ringing (timeout_reason=ended_banner)",
-                        elapsed,
-                    )
-                    return CallState.ENDED
-                if elapsed >= float(max_ring_seconds):
-                    logger.info(
-                        "NO_ANSWER: max ring elapsed (elapsed=%.1fs max=%.1fs timeout_reason=max_ring_seconds)",
-                        elapsed,
-                        float(max_ring_seconds),
-                    )
-                    session.transition(CallState.FAILED, "no answer (max ring seconds elapsed)")
-                    return CallState.FAILED
+                if answered_ts is None:
+                    # ---------------- Still ringing ----------------
+                    if voicemail_cue or voicemail_page:
+                        logger.info(
+                            "RINGING: ignoring voicemail cue before answered evidence "
+                            "(elapsed=%.1fs dom=%s page=%s)",
+                            elapsed,
+                            voicemail_cue,
+                            voicemail_page,
+                        )
+                    if ended_banner and elapsed < float(min_ring_seconds):
+                        logger.info(
+                            "RINGING: ignoring call-ended banner before min ring "
+                            "(elapsed=%.1fs min=%.1fs)",
+                            elapsed,
+                            float(min_ring_seconds),
+                        )
+                    elif ended_banner:
+                        session.transition(CallState.ENDED, "call-ended banner detected after min ring")
+                        logger.info(
+                            "ENDED: call-ended banner after %.1fs while ringing (timeout_reason=ended_banner)",
+                            elapsed,
+                        )
+                        return CallState.ENDED
+                    if elapsed >= float(max_ring_seconds):
+                        logger.info(
+                            "NO_ANSWER: max ring elapsed (elapsed=%.1fs max=%.1fs timeout_reason=max_ring_seconds)",
+                            elapsed,
+                            float(max_ring_seconds),
+                        )
+                        session.transition(CallState.FAILED, "no answer (max ring seconds elapsed)")
+                        return CallState.FAILED
 
-                time.sleep(poll_interval)
-                continue
+                    time.sleep(poll_interval)
+                    continue
 
-            # If already answered, voicemail can be detected only shortly after.
+            # Post-answer: DOM voicemail scan (capped for speed) before declaring live CONNECTED.
             if answered_ts is not None:
-                if (now - answered_ts) <= float(voicemail_detect_seconds):
+                since_answer = now - answered_ts
+                dom_scan_window = min(
+                    float(voicemail_detect_seconds),
+                    POST_CONNECT_VOICEMAIL_SCAN_CAP_SECONDS,
+                )
+                if since_answer <= dom_scan_window:
                     if voicemail_cue or voicemail_page:
                         session.transition(CallState.VOICEMAIL, "voicemail detected shortly after ANSWERED")
                         logger.info(
                             "VOICEMAIL: detected after answered evidence "
                             "(elapsed=%.1fs since_answer=%.1fs dom=%s page=%s audio_classifier=%s)",
                             elapsed,
-                            now - answered_ts,
+                            since_answer,
                             voicemail_cue,
                             voicemail_page,
                             "not_available_in_dom_detector",
@@ -944,14 +996,28 @@ class GoogleVoiceBrowser:
                     logger.info(
                         "CONNECTED: ignoring late voicemail cue outside detect window "
                         "(since_answer=%.1fs window=%.1fs dom=%s page=%s)",
-                        now - answered_ts,
-                        float(voicemail_detect_seconds),
+                        since_answer,
+                        dom_scan_window,
                         voicemail_cue,
                         voicemail_page,
                     )
-                # After voicemail-detect window, only rely on connected->ended transitions.
+                if (
+                    answered_in_this_detect_call
+                    and session.state == CallState.CONNECTED
+                    and since_answer >= dom_scan_window
+                ):
+                    logger.info(
+                        "CONNECTED: post-answer voicemail scan complete (since_answer=%.1fs window=%.1fs)",
+                        since_answer,
+                        dom_scan_window,
+                    )
+                    return CallState.CONNECTED
 
-            # ---------------- ENDED detection ----------------
+                if answered_in_this_detect_call and since_answer < dom_scan_window:
+                    time.sleep(poll_interval)
+                    continue
+
+            # ---------------- ENDED detection (after post-answer scan or follow-up watch) ----------------
             if ended_banner:
                 if not session.is_terminal():
                     session.transition(CallState.ENDED, "call-ended banner detected")
@@ -980,13 +1046,49 @@ class GoogleVoiceBrowser:
             session.transition(CallState.FAILED, "no answer (timed out waiting for ANSWERED)" )
             return CallState.FAILED
 
+        if session.state == CallState.CONNECTED:
+            logger.info(
+                "CONNECTED: detect_call_state deadline reached after answer scan for %s",
+                session.phone,
+            )
+            return CallState.CONNECTED
+        if session.state == CallState.VOICEMAIL:
+            return CallState.VOICEMAIL
+
         logger.warning("detect_call_state timed out after %.0fs for %s", timeout, session.phone)
         if not session.is_terminal():
             session.transition(CallState.FAILED, "state detection timeout")
         return CallState.FAILED
 
+    def _active_call_dom_text(self) -> str:
+        """Return lowercase text from the active-call surface only (not full page)."""
+        if not self.driver:
+            return ""
+        for group in ("call_active", "answered_controls", "call_timer"):
+            for sel in _SEL.get(group, []):
+                try:
+                    for el in self.driver.find_elements(By.CSS_SELECTOR, sel):
+                        if el.is_displayed():
+                            text = (el.text or "").strip().lower()
+                            if text:
+                                return text
+                except WebDriverException:
+                    continue
+        try:
+            for el in self.driver.find_elements(By.CSS_SELECTOR, "[role='dialog'], [aria-label*='call' i]"):
+                if el.is_displayed():
+                    text = (el.text or "").strip().lower()
+                    if text and len(text) < 8000:
+                        return text
+        except WebDriverException:
+            pass
+        return ""
+
     def _page_contains_voicemail(self) -> bool:
         try:
+            scoped = self._active_call_dom_text()
+            if scoped:
+                return any(phrase in scoped for phrase in _VOICEMAIL_PAGE_PHRASES)
             src = self.driver.page_source.lower()
             return any(phrase in src for phrase in _VOICEMAIL_PAGE_PHRASES)
         except WebDriverException:
@@ -996,18 +1098,57 @@ class GoogleVoiceBrowser:
     # Voicemail beep wait
     # ------------------------------------------------------------------
 
-    def wait_for_voicemail_beep(self, timeout: float = 35.0) -> bool:
-        """
-        Wait for voicemail to begin recording. Returns True when detected.
-        Call this after transitioning to VOICEMAIL before playing audio.
-        """
+    def is_call_screening_active(self) -> bool:
+        """True when Google Voice call screening asks for name/purpose."""
+        if not self.driver:
+            return False
+        if self._any_present("screening_input"):
+            return True
+        try:
+            src = self.driver.page_source.lower()
+            return any(phrase in src for phrase in _SCREENING_PAGE_PHRASES)
+        except WebDriverException:
+            return False
+
+    def wait_for_live_after_screening(
+        self,
+        timeout: float = 25.0,
+        poll_interval: float = 0.5,
+    ) -> bool:
+        """Poll until real answer evidence appears after screening."""
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self._voicemail_cue_present() or self._page_contains_voicemail():
-                time.sleep(1.5)  # wait for actual beep tone
+            if self._connected_timer_present() or self._answered_controls_present()[0]:
                 return True
-            time.sleep(0.5)
+            if not self.is_call_screening_active() and self._any_present("call_active"):
+                if self._connected_timer_present():
+                    return True
+            time.sleep(poll_interval)
         return False
+
+    def wait_for_voicemail_ready(
+        self,
+        max_wait: float = 8.0,
+        min_ready_after: float = 4.0,
+    ) -> bool:
+        """
+        Wait briefly for voicemail recording surface (not 30s beep-only wait).
+        Returns True when safe to start playing the voicemail message.
+        """
+        deadline = time.time() + max_wait
+        started = time.time()
+        while time.time() < deadline:
+            if self._voicemail_cue_present() or self._page_contains_voicemail():
+                elapsed = time.time() - started
+                if elapsed >= min(min_ready_after, max_wait * 0.5):
+                    time.sleep(0.6)
+                    return True
+            time.sleep(0.35)
+        return (time.time() - started) >= min(min_ready_after, 1.0)
+
+    def wait_for_voicemail_beep(self, timeout: float = 8.0) -> bool:
+        """Backward-compatible alias for short voicemail-ready wait."""
+        return self.wait_for_voicemail_ready(max_wait=timeout, min_ready_after=2.0)
 
     # ------------------------------------------------------------------
     # Hangup

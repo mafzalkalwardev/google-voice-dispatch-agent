@@ -5,8 +5,8 @@ import pyttsx3
 
 logger = logging.getLogger("GoogleVoiceAgent")
 
-# Preferred voice keywords in priority order (Windows SAPI voices)
-_PREFERRED_VOICE_KEYWORDS = ["Zira", "David", "Mark", "English"]
+# Windows SAPI fallback — prefer male voices for Tony (never default to Zira first).
+_PREFERRED_VOICE_KEYWORDS = ["David", "Mark", "Guy", "James", "George", "English", "Zira"]
 
 
 def _pick_voice(engine: pyttsx3.Engine) -> None:

@@ -11,6 +11,10 @@
   </div>
 </div>
 
+<div class="batch-progress-banner" id="batchProgressBanner">
+  Batch progress: loading…
+</div>
+
 <!-- Compliance warning -->
 <div class="compliance-banner">
   <div class="compliance-icon">⚖</div>
@@ -424,8 +428,24 @@ function clearLog() {
   logIndex = 0;
 }
 
+async function refreshBatchProgress() {
+  try {
+    const r = await fetch('/api/batch-progress');
+    const data = await r.json();
+    const el = document.getElementById('batchProgressBanner');
+    if (!el) return;
+    el.textContent =
+      `Batch resume: ${data.completed_count} number(s) already completed for this contacts file. ` +
+      `Re-runs skip them automatically (use CLI --reset-batch-progress to dial all again).`;
+  } catch (e) {
+    const el = document.getElementById('batchProgressBanner');
+    if (el) el.textContent = 'Batch progress unavailable.';
+  }
+}
+
 // On page load: sync UI with current status
 (async () => {
+  refreshBatchProgress();
   const r = await fetch('/api/run/status');
   const state = await r.json();
   updateStatusPill(state.status);

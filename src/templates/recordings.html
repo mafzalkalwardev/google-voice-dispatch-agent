@@ -7,7 +7,7 @@
 <div class="page-header">
   <div class="page-header-left">
     <h2 class="page-title">Recordings</h2>
-    <p class="page-sub">Listen to attended/connected calls (audio stored under logs/recordings).</p>
+    <p class="page-sub">Recent connected and voicemail calls (audio under logs/recordings and CRM archives).</p>
   </div>
   <div class="quick-actions">
     <a href="/connected-calls" class="btn btn-secondary btn-sm">Connected Calls</a>
@@ -17,7 +17,7 @@
 
 <div class="panel">
   <div class="panel-header">
-    <h3 class="panel-title">Connected Calls</h3>
+    <h3 class="panel-title">Recent Calls</h3>
     <div style="margin-top:.25rem;display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
       <a class="link-muted" href="/recordings">All</a>
     </div>
@@ -50,7 +50,13 @@
           </td>
           <td class="td-mono">{{ call.phone or '-' }}</td>
           <td>{{ call.truck_type or '-' }}{% if call.truck_length %}<br><span class="text-muted">{{ call.truck_length }}</span>{% endif %}</td>
-          <td><span class="badge badge--blue">{{ call.follow_up_status or call.interested_status or call.interested or 'Open' }}</span></td>
+          <td>
+            {% if call.call_type == 'voicemail' %}
+              <span class="badge badge--amber">Voicemail</span>
+            {% else %}
+              <span class="badge badge--blue">{{ call.follow_up_status or call.interested_status or call.interested or 'Open' }}</span>
+            {% endif %}
+          </td>
           <td>
             {% if call.recording_path %}
               <a class="link-muted" href="/recordings/{{ call.id }}" style="margin-right:.5rem">View</a>

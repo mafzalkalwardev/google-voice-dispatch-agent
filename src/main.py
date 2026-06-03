@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import signal
+import sys
 import threading
 import time
 from pathlib import Path
@@ -73,7 +75,45 @@ def _parse_args() -> argparse.Namespace:
                    help="DOM diagnostic mode: dial PHONE, capture DOM snapshots every 1.5s "
                         "under logs/diagnostics/, hang up after 90s. "
                         "Use only with the designated test number.")
+    p.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Dial every contact in the list; do not skip numbers completed in a prior run.",
+    )
+    p.add_argument(
+        "--reset-batch-progress",
+        action="store_true",
+        help="Clear saved batch progress for the current contacts file before dialing.",
+    )
     return p.parse_args()
+
+
+def _install_shutdown_handlers(browser_holder: list) -> None:
+    def _shutdown(signum: int, frame) -> None:  # noqa: ARG001
+        logger = logging.getLogger("GoogleVoiceAgent")
+        logger.info("Shutdown signal %s — closing browser", signum)
+        browser = browser_holder[0] if browser_holder else None
+        if browser is not None:
+            try:
+                if browser.is_call_active():
+                    browser.hangup_call()
+            except Exception:
+                pass
+            try:
+                browser.close()
+            except Exception:
+                pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _shutdown)
+
+
+def _scaled_groq_rate_limit(cfg: Config) -> int:
+    """Scale client throttle when multiple Groq accounts are configured."""
+    return cfg.groq_max_retries_per_minute * max(1, len(cfg.groq_api_keys))
 
 
 def _run_preflight(cfg: Config) -> int:
@@ -165,7 +205,22 @@ def _run_call(
     max_ring_seconds: float = 45.0,
     voicemail_detect_seconds: float = 15.0,
     tts_warmup: bool = True,
-) -> None:
+    tts_allow_sapi_fallback: bool = False,
+    silence_does_not_end_call: bool = True,
+    use_stt_context: bool = True,
+    max_silence_seconds: float = 8.0,
+    llm_model_realtime: str = "llama-3.1-8b-instant",
+    listen_after_tts_delay_ms: int = 150,
+    use_thinking_fillers: bool = True,
+    filler_probability: float = 0.7,
+    stream_llm_replies: bool = True,
+    voicemail_max_wait_seconds: float = 8.0,
+    voicemail_play_after_seconds: float = 4.0,
+    voicemail_play_on_greeting: bool = True,
+    voicemail_greeting_frames_required: int = 6,
+    screening_purpose_text: str = "freight dispatch and load support",
+    groq_max_retries_per_minute: int = 60,
+) -> str | None:
     phone = contact["phone"]
     name = contact["name"]
     session = CallSession(phone=phone, contact_name=name)
@@ -202,13 +257,20 @@ def _run_call(
 
     voicemail_text_path.write_text(voicemail_text, encoding="utf-8")
 
-    save_text_to_speech(voicemail_text, voicemail_path)
+    try:
+        from src.realtime_tts import save_edge_tts_wav
+
+        save_edge_tts_wav(voicemail_text, voicemail_path, voice=tts_voice)
+    except Exception as exc:
+        logger.warning("[%d] edge-tts voicemail generation failed (%s); using SAPI fallback", index, exc)
+        save_text_to_speech(voicemail_text, voicemail_path)
 
     # Pre-generate realtime opening line before dialing so pickup is not silent.
     if realtime:
         agent_opening_ok = False
         try:
             opening_line = _generate_realtime_opening_line(
+                phone=phone,
                 contact_name=name,
                 groq_api_key=groq_api_key,
                 groq_model=ai.model,
@@ -238,7 +300,7 @@ def _run_call(
         logger.info("[%d] DRY RUN — skipping dial for %s", index, phone)
         session.outcome = "DRY_RUN"
         call_logger.log_session(session, notes="dry-run mode")
-        return
+        return None
 
     # ---- Dial ----
     logger.info("[%d] Dialing %s...", index, phone)
@@ -250,7 +312,7 @@ def _run_call(
         call_logger.log_session(session)
         _archive_call_result(session, contact, {}, logger, index)
         logger.warning("[%d] Dial failed for %s", index, phone)
-        return
+        return phone
 
     # ---- Poll for ANSWERED or VOICEMAIL ----
     # Google Voice shows a hangup button while an outbound call is only ringing,
@@ -258,6 +320,7 @@ def _run_call(
     final_state = browser.detect_call_state(
         session,
         timeout=float(call_timeout),
+        poll_interval=0.5,
         ctrl_confirm_polls=answer_confirm_polls,
         min_ring_seconds=min_ring_seconds,
         max_ring_seconds=max_ring_seconds,
@@ -267,6 +330,41 @@ def _run_call(
     if final_state == CallState.CONNECTED:
         if realtime and loopback_device_index is not None:
             logger.info("[%d] Call connected — starting realtime conversation loop", index)
+            from src.opening_pool import pick_opening
+            from src.realtime_tts import RealtimeTTS, validate_tts_output_device
+
+            opening_line = pick_opening(
+                phone,
+                agent_name,
+                company_name,
+                llm_line=opening_line,
+            )
+            shared_tts = None
+            try:
+                validate_tts_output_device(loopback_device_index)
+                shared_tts = RealtimeTTS(
+                    device_index=loopback_device_index,
+                    voice=tts_voice,
+                    use_cache=tts_warmup,
+                    allow_sapi_fallback=tts_allow_sapi_fallback,
+                )
+                if loopback_device_index is not None:
+                    _handle_call_screening(
+                        browser,
+                        loopback_device_index,
+                        agent_name,
+                        company_name,
+                        screening_purpose_text,
+                        logger,
+                        tts_voice=tts_voice,
+                        tts=shared_tts,
+                        allow_sapi_fallback=tts_allow_sapi_fallback,
+                    )
+                if opening_line:
+                    shared_tts.prewarm_line(opening_line)
+            except Exception as exc:
+                logger.warning("[%d] Shared RealtimeTTS setup failed: %s", index, exc)
+                shared_tts = None
             _run_realtime_loop(
                 session=session,
                 contact_name=name,
@@ -297,6 +395,19 @@ def _run_call(
                 vad_speech_frames=vad_speech_frames,
                 voicemail_detect_seconds=voicemail_detect_seconds,
                 tts_warmup=tts_warmup,
+                silence_does_not_end_call=silence_does_not_end_call,
+                use_stt_context=use_stt_context,
+                max_silence_seconds=max_silence_seconds,
+                llm_model_realtime=llm_model_realtime,
+                listen_after_tts_delay_ms=listen_after_tts_delay_ms,
+                use_thinking_fillers=use_thinking_fillers,
+                filler_probability=filler_probability,
+                stream_llm_replies=stream_llm_replies,
+                voicemail_play_on_greeting=voicemail_play_on_greeting,
+                voicemail_greeting_frames_required=voicemail_greeting_frames_required,
+                groq_max_retries_per_minute=groq_max_retries_per_minute,
+                shared_tts=shared_tts,
+                tts_allow_sapi_fallback=tts_allow_sapi_fallback,
             )
         else:
             logger.info("[%d] Call connected — playing script audio", index)
@@ -309,19 +420,29 @@ def _run_call(
                 session.outcome = session.state.value
                 call_logger.log_session(session)
                 _archive_call_result(session, contact, {}, logger, index)
-                return
+                return phone
             # Wait for natural end (up to 60s after audio finishes)
             followup_state = browser.detect_call_state(
-                session, timeout=60.0, ctrl_confirm_polls=answer_confirm_polls,
+                session,
+                timeout=60.0,
+                poll_interval=0.5,
+                ctrl_confirm_polls=answer_confirm_polls,
+                min_ring_seconds=min_ring_seconds,
+                max_ring_seconds=max_ring_seconds,
+                voicemail_detect_seconds=voicemail_detect_seconds,
             )
             if followup_state == CallState.VOICEMAIL:
                 logger.info("[%d] Voicemail detected after initial connection", index)
-                browser.wait_for_voicemail_beep(timeout=30.0)
-                if not _play_audio(voicemail_path, loopback_device, loopback_available, logger):
-                    session.transition(CallState.FAILED, "voicemail audio playback failed")
-                browser.hangup_call()
-                if not session.is_terminal():
-                    session.transition(CallState.ENDED, "hung up after voicemail playback")
+                _deliver_voicemail_and_hangup(
+                    browser,
+                    session,
+                    voicemail_path,
+                    loopback_device,
+                    loopback_available,
+                    logger,
+                    max_wait=voicemail_max_wait_seconds,
+                    ready_after=voicemail_play_after_seconds,
+                )
             elif followup_state == CallState.CONNECTED:
                 logger.info("[%d] Call still active after playback - hanging up", index)
                 browser.hangup_call()
@@ -329,13 +450,17 @@ def _run_call(
                     session.transition(CallState.ENDED, "hung up after script playback")
 
     elif final_state == CallState.VOICEMAIL:
-        logger.info("[%d] Voicemail detected — playing voicemail audio", index)
-        browser.wait_for_voicemail_beep(timeout=30.0)
-        if not _play_audio(voicemail_path, loopback_device, loopback_available, logger):
-            session.transition(CallState.FAILED, "voicemail audio playback failed")
-        browser.hangup_call()
-        if not session.is_terminal():
-            session.transition(CallState.ENDED, "hung up after voicemail playback")
+        logger.info("[%d] Voicemail detected — fast voicemail delivery", index)
+        _deliver_voicemail_and_hangup(
+            browser,
+            session,
+            voicemail_path,
+            loopback_device,
+            loopback_available,
+            logger,
+            max_wait=voicemail_max_wait_seconds,
+            ready_after=voicemail_play_after_seconds,
+        )
 
     elif final_state in (CallState.ENDED, CallState.FAILED):
         logger.info("[%d] Call ended/failed before playback for %s", index, phone)
@@ -360,9 +485,17 @@ def _run_call(
             model=ai.model,
             logger=logger,
             index=index,
+            opening_line=opening_line or "",
         )
     else:
         _archive_call_result(session, contact, {}, logger, index)
+        try:
+            from src.call_intelligence import record_call_from_session
+
+            record_call_from_session(session, contact, lead={})
+        except Exception as exc:
+            logger.warning("[%d] Call intelligence update failed: %s", index, exc)
+    return phone
 
 
 def _extract_and_upsert_lead(
@@ -372,6 +505,7 @@ def _extract_and_upsert_lead(
     model: str,
     logger: logging.Logger,
     index: int,
+    opening_line: str = "",
 ) -> None:
     """Extract structured lead data and archive the call into the CRM store."""
     lead: dict = {}
@@ -404,6 +538,12 @@ def _extract_and_upsert_lead(
         groq_api_key=groq_api_key,
         model=model,
     )
+    try:
+        from src.call_intelligence import record_call_from_session
+
+        record_call_from_session(session, contact, lead=lead, opening_line=opening_line)
+    except Exception as exc:
+        logger.warning("[%d] Call intelligence update failed: %s", index, exc)
 
 
 def _archive_call_result(
@@ -439,10 +579,84 @@ def _archive_call_result(
 
 
 def _fallback_opening_line(agent_name: str, company_name: str) -> str:
-    return f"Hi, this is {agent_name} with {company_name}, calling about freight dispatch."
+    from src.opening_pool import random_curated
+
+    return random_curated(agent_name, company_name)
+
+
+def _screening_response_text(agent_name: str, company_name: str, purpose: str) -> str:
+    return (
+        f"{agent_name} from {company_name}, calling about {purpose}."
+    )
+
+
+def _handle_call_screening(
+    browser: GoogleVoiceBrowser,
+    loopback_device_index: int,
+    agent_name: str,
+    company_name: str,
+    purpose: str,
+    logger: logging.Logger,
+    tts_voice: str = "en-US-GuyNeural",
+    tts: object | None = None,
+    allow_sapi_fallback: bool = False,
+) -> bool:
+    """Respond to Google Voice name/purpose screening, then wait for live answer."""
+    if not browser.is_call_screening_active():
+        return False
+    logger.info("Call screening detected — speaking name and purpose")
+    try:
+        from src.realtime_tts import RealtimeTTS
+
+        own_tts = tts is None
+        if own_tts:
+            tts = RealtimeTTS(
+                device_index=loopback_device_index,
+                voice=tts_voice,
+                use_cache=True,
+                allow_sapi_fallback=allow_sapi_fallback,
+            )
+        line = _screening_response_text(agent_name, company_name, purpose)
+        assert tts is not None
+        if hasattr(tts, "prewarm_line"):
+            tts.prewarm_line(line)  # type: ignore[attr-defined]
+        tts.speak(line)  # type: ignore[attr-defined]
+    except Exception as exc:
+        logger.warning("Screening TTS failed: %s", exc)
+        return False
+    if browser.wait_for_live_after_screening(timeout=25.0):
+        logger.info("Call screening cleared — live call ready")
+        return True
+    logger.warning("Call screening did not clear within timeout")
+    return False
+
+
+def _deliver_voicemail_and_hangup(
+    browser: GoogleVoiceBrowser,
+    session: CallSession,
+    voicemail_path: Path,
+    loopback_device: str,
+    loopback_available: bool,
+    logger: logging.Logger,
+    *,
+    max_wait: float = 8.0,
+    ready_after: float = 4.0,
+) -> bool:
+    browser.wait_for_voicemail_ready(max_wait=max_wait, min_ready_after=ready_after)
+    if not _play_audio(voicemail_path, loopback_device, loopback_available, logger):
+        if not session.is_terminal():
+            session.transition(CallState.FAILED, "voicemail audio playback failed")
+        return False
+    time.sleep(1.0)
+    if browser.is_call_active():
+        browser.hangup_call()
+    if not session.is_terminal():
+        session.transition(CallState.ENDED, "hung up after voicemail playback")
+    return True
 
 
 def _generate_realtime_opening_line(
+    phone: str,
     contact_name: str,
     groq_api_key: str,
     groq_model: str,
@@ -469,17 +683,26 @@ def _generate_realtime_opening_line(
             company_website=company_website,
             callback_number=callback_number,
             contact_name=contact_name,
+            contact_phone=phone,
         )
         line = agent.opening_line()
     except Exception as exc:
         logger.error("[%d] Opening line generation failed: %s", index, exc)
         line = ""
 
+    from src.opening_pool import pick_opening
+
+    line = pick_opening(
+        phone,
+        agent_name,
+        company_name,
+        llm_line=line or None,
+    )
     if not line:
         line = fallback
         logger.warning("[%d] Opening line empty; using fallback: %s", index, line)
     else:
-        logger.info("[%d] Opening line generated before dialing: %s", index, line)
+        logger.info("[%d] Opening line prepared before dialing: %s", index, line)
     return line
 
 
@@ -513,6 +736,21 @@ def _run_realtime_loop(
     vad_speech_frames: int = 2,
     voicemail_detect_seconds: float = 15.0,
     tts_warmup: bool = True,
+    silence_does_not_end_call: bool = True,
+    use_stt_context: bool = True,
+    max_silence_seconds: float = 8.0,
+    llm_model_realtime: str = "llama-3.1-8b-instant",
+    listen_after_tts_delay_ms: int = 150,
+    use_thinking_fillers: bool = True,
+    filler_probability: float = 0.7,
+    stream_llm_replies: bool = True,
+    voicemail_play_on_greeting: bool = True,
+    voicemail_greeting_frames_required: int = 6,
+    groq_max_retries_per_minute: int = 60,
+    voicemail_max_wait_seconds: float = 8.0,
+    voicemail_play_after_seconds: float = 4.0,
+    shared_tts: object | None = None,
+    tts_allow_sapi_fallback: bool = False,
 ) -> None:
     from src.conversation_agent import ConversationAgent
     from src.conversation_loop import ConversationLoop
@@ -534,22 +772,35 @@ def _run_realtime_loop(
         validate_tts_output_device(loopback_device_index)
         logger.info("Realtime selected output device: %s", describe_audio_device(loopback_device_index))
         logger.info("Realtime selected capture device: CAPTURE_DEVICE='%s'", capture_device)
-        tts = RealtimeTTS(
-            device_index=loopback_device_index,
-            voice=tts_voice,
-            use_cache=tts_warmup,
-        )
+        if shared_tts is not None:
+            tts = shared_tts
+        else:
+            tts = RealtimeTTS(
+                device_index=loopback_device_index,
+                voice=tts_voice,
+                use_cache=tts_warmup,
+                allow_sapi_fallback=tts_allow_sapi_fallback,
+            )
+            if opening_line and hasattr(tts, "prewarm_line"):
+                tts.prewarm_line(opening_line)  # type: ignore[attr-defined]
         agent = ConversationAgent(
             api_key=groq_api_key,
-            model=groq_model,
+            model=llm_model_realtime,
             agent_name=agent_name,
             company_name=company_name,
             company_context=company_context,
             company_website=company_website,
             callback_number=callback_number,
             contact_name=contact_name,
+            contact_phone=session.phone,
+            rate_limit_per_minute=groq_max_retries_per_minute,
         )
-        stt = GroqWhisperSTT(api_key=groq_api_key, model=stt_model, retry_count=stt_retry_count)
+        stt = GroqWhisperSTT(
+            api_key=groq_api_key,
+            model=stt_model,
+            retry_count=stt_retry_count,
+            use_stt_context=use_stt_context,
+        )
         vad_cfg = VADConfig(
             speech_threshold=vad_threshold,
             silence_trigger_frames=vad_silence_frames,
@@ -567,6 +818,14 @@ def _run_realtime_loop(
             wait_for_human_audio=wait_for_human_audio,
             human_audio_timeout=human_audio_timeout,
             voicemail_detect_seconds=voicemail_detect_seconds,
+            silence_does_not_end_call=silence_does_not_end_call,
+            max_silence_seconds=max_silence_seconds,
+            listen_after_tts_delay_ms=listen_after_tts_delay_ms,
+            use_thinking_fillers=use_thinking_fillers,
+            filler_probability=filler_probability,
+            stream_llm_replies=stream_llm_replies,
+            voicemail_play_on_greeting=voicemail_play_on_greeting,
+            voicemail_greeting_frames_required=voicemail_greeting_frames_required,
         )
         logger.info("Transcript will be saved to: %s", transcript_path)
         logger.info("Recording will be saved to: %s", recording_path)
@@ -586,8 +845,7 @@ def _run_realtime_loop(
     )
     monitor.start()
     try:
-        # Brief pause to let call UI stabilize; answer detection runs inside loop.run()
-        time.sleep(0.5)
+        time.sleep(0.2)
         loop.run(session=session, opening_line=opening_line, auto_opening=True)
     except Exception as exc:
         logger.error("Realtime loop error: %s", exc)
@@ -597,17 +855,17 @@ def _run_realtime_loop(
         monitor_stop.set()
         monitor.join(timeout=2.0)
         if session.state == CallState.VOICEMAIL:
-            logger.info("Realtime voicemail detected; playing voicemail audio: %s", voicemail_path)
-            if browser.is_call_active():
-                if _play_audio(voicemail_path, loopback_device, loopback_available, logger):
-                    browser.hangup_call()
-                    if not session.is_terminal():
-                        session.transition(CallState.ENDED, "hung up after realtime voicemail playback")
-                else:
-                    browser.hangup_call()
-                    session.transition(CallState.FAILED, "realtime voicemail audio playback failed")
-            elif not session.is_terminal():
-                session.transition(CallState.ENDED, "voicemail detected but Google Voice call ended")
+            logger.info("Realtime voicemail detected; fast delivery: %s", voicemail_path)
+            _deliver_voicemail_and_hangup(
+                browser,
+                session,
+                voicemail_path,
+                loopback_device,
+                loopback_available,
+                logger,
+                max_wait=voicemail_max_wait_seconds,
+                ready_after=voicemail_play_after_seconds,
+            )
             return
         if not session.is_terminal():
             if browser.is_call_active():
@@ -624,6 +882,9 @@ def _monitor_live_call(
     stop_event: threading.Event,
     max_duration: float,
     logger: logging.Logger,
+    *,
+    inactive_polls_required: int = 6,
+    warmup_seconds: float = 5.0,
 ) -> None:
     started = time.monotonic()
     inactive_hits = 0
@@ -635,14 +896,25 @@ def _monitor_live_call(
             loop.stop()
             return
 
-        if browser.is_call_active():
+        if getattr(loop, "is_agent_busy", lambda: False)():
+            inactive_hits = 0
+        elif browser.is_call_active():
             inactive_hits = 0
         else:
             inactive_hits += 1
-            if time.monotonic() - started > 3.0 and inactive_hits >= 3:
-                logger.info("Google Voice call no longer active; stopping realtime loop.")
+            if (
+                time.monotonic() - started > warmup_seconds
+                and inactive_hits >= inactive_polls_required
+            ):
+                logger.info(
+                    "Google Voice call no longer active (%d polls); stopping realtime loop.",
+                    inactive_hits,
+                )
                 if not session.is_terminal():
-                    session.transition(CallState.ENDED, "Google Voice call ended")
+                    try:
+                        session.transition(CallState.ENDED, "Google Voice call ended")
+                    except ValueError:
+                        pass
                 loop.stop()
                 return
 
@@ -663,13 +935,11 @@ def _play_audio(
         except Exception as exc:
             logger.error("Audio playback failed: %s", exc)
             return False
-    else:
-        logger.warning(
-            "No loopback device — audio not injected. File: %s", path
-        )
-        # sleep rough duration so call isn't cut short
-        time.sleep(30)
-        return False
+    logger.error(
+        "No loopback device — cannot inject audio. Configure VB-CABLE / LOOPBACK_DEVICE. File: %s",
+        path,
+    )
+    return False
 
 
 def _run_call_state_diagnostic(args: argparse.Namespace, cfg: Config) -> None:
@@ -879,7 +1149,7 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
             "CALLBACK_NUMBER is not configured. Add it to .env or pass --callback-number."
         )
 
-    ai = GroqAgent(api_key=cfg.groq_api_key, model=cfg.groq_model)
+    ai = GroqAgent(api_key=cfg.groq_api_key, model=cfg.llm_model_batch)
     output_dir   = ensure_audio_dir(args.output_dir)
     script_dir   = output_dir / "scripts"
     voicemail_dir = output_dir / "voicemails"
@@ -970,6 +1240,16 @@ def main() -> None:
 
     cfg.validate()
     logger = setup_logger()
+    from src.groq_pool import get_groq_pool
+
+    try:
+        pool = get_groq_pool(refresh=True)
+        logger.info(
+            "Groq API pool ready: %d key(s), failover enabled",
+            pool.key_count,
+        )
+    except ValueError:
+        pass
     call_logger = CallLogger()
 
     contact_path = Path(args.contacts or cfg.contacts_file)
@@ -990,13 +1270,50 @@ def main() -> None:
             "CALLBACK_NUMBER is not configured. Add it to .env or pass --callback-number."
         )
 
-    logger.info("Loading contacts from %s", contact_path)
-    contacts = load_contacts(contact_path)
-    if not contacts:
-        raise SystemExit("No valid contacts loaded — check your contacts file.")
-    logger.info("Loaded %d contacts, limit=%d", len(contacts), args.limit)
+    from src.batch_progress import (
+        contacts_fingerprint,
+        filter_contacts,
+        mark_completed,
+        reset_progress,
+    )
 
-    ai = GroqAgent(api_key=cfg.groq_api_key, model=cfg.groq_model)
+    logger.info("Loading contacts from %s", contact_path)
+    all_contacts = load_contacts(contact_path)
+    if not all_contacts:
+        raise SystemExit("No valid contacts loaded — check your contacts file.")
+
+    fingerprint = contacts_fingerprint(contact_path)
+    if args.reset_batch_progress:
+        reset_progress(fingerprint)
+        logger.info("Cleared batch progress for %s", contact_path)
+
+    contacts = filter_contacts(
+        all_contacts[: args.limit],
+        fingerprint,
+        resume=not args.no_resume,
+    )
+    if cfg.use_call_intelligence:
+        from src.call_intelligence import filter_dialable_contacts
+
+        contacts, intel_skipped, _skipped_rows = filter_dialable_contacts(contacts)
+        if intel_skipped:
+            logger.info(
+                "Call intelligence skipped %d contact(s) (DNC, wrong number, repeat failures)",
+                intel_skipped,
+            )
+    if not contacts:
+        raise SystemExit(
+            "No contacts left to dial — all numbers in this list were completed. "
+            "Use --no-resume or --reset-batch-progress to dial again."
+        )
+    logger.info(
+        "Loaded %d contacts (%d in batch after resume filter), limit=%d",
+        len(all_contacts),
+        len(contacts),
+        args.limit,
+    )
+
+    ai = GroqAgent(api_key=cfg.groq_api_key, model=cfg.llm_model_batch)
 
     output_dir = ensure_audio_dir(args.output_dir)
     script_dir = output_dir / "scripts"
@@ -1012,11 +1329,11 @@ def main() -> None:
             "Install VB-CABLE from https://vb-audio.com/Cable/",
             loopback_device,
         )
-    if args.realtime and not args.dry_run and not loopback_available:
+    if not args.dry_run and not loopback_available:
         raise SystemExit(
-            "Realtime mode needs an output loopback device so TTS reaches Google Voice. "
+            "Live calling needs an output loopback device so TTS reaches Google Voice. "
             "Install/configure VB-CABLE, set LOOPBACK_DEVICE or --loopback-device to the "
-            "playback cable input, or run with --static-playback."
+            "playback cable input."
         )
 
     if args.dry_run:
@@ -1048,11 +1365,21 @@ def main() -> None:
                 max_ring_seconds=getattr(cfg, "max_ring_seconds", 45.0),
                 voicemail_detect_seconds=getattr(cfg, "voicemail_detect_seconds", 15.0),
                 tts_warmup=cfg.tts_warmup,
+                silence_does_not_end_call=cfg.silence_does_not_end_call,
+                use_stt_context=cfg.use_stt_context,
+                max_silence_seconds=cfg.max_silence_seconds,
             )
         logger.info("Dry run complete. Audio files in %s/", output_dir)
         return
 
-    browser = GoogleVoiceBrowser(profile_name=profile_name, headless=args.headless)
+    browser_holder: list = []
+    _install_shutdown_handlers(browser_holder)
+    browser = GoogleVoiceBrowser(
+        profile_name=profile_name,
+        headless=args.headless,
+        avoid_page_reload=cfg.avoid_gv_page_reload,
+    )
+    browser_holder.append(browser)
     logger.info("Launching Chrome profile: %s", profile_name)
     browser.launch()
 
@@ -1068,56 +1395,132 @@ def main() -> None:
     _cable_out = loopback_device.replace("Input", "Output").replace("INPUT", "OUTPUT")
     browser.warn_if_mic_not_set(_cable_out)
 
-    logger.info("Logged in. Starting call loop (%d contacts).", min(len(contacts), args.limit))
+    logger.info("Logged in. Starting call loop (%d contacts).", len(contacts))
+
+    if cfg.tts_warmup and loopback_device_index is not None:
+        try:
+            from src.opening_pool import warmup_phrases
+            from src.tts_cache import TTSCache
+
+            cache = TTSCache(tts_voice=tts_voice)
+            cache.warm(warmup_phrases(agent_name, company_name))
+        except Exception as exc:
+            logger.debug("Opening TTS warmup skipped: %s", exc)
 
     call_cooldown_seconds = float(cfg.call_cooldown_seconds)
+    from src.log_rotation import rotate_logs_if_needed
 
+    shared_call_kwargs = dict(
+        objective=args.objective,
+        offer=args.offer,
+        callback_number=callback_number,
+        agent_name=agent_name,
+        company_name=company_name,
+        company_context=company_context,
+        company_website=company_website,
+        loopback_device=loopback_device,
+        loopback_device_index=loopback_device_index,
+        loopback_available=loopback_available,
+        call_timeout=call_timeout,
+        call_max_duration=call_max_duration,
+        dry_run=False,
+        realtime=args.realtime,
+        capture_device=capture_device,
+        tts_voice=tts_voice,
+        stt_model=cfg.stt_model,
+        vad_threshold=cfg.vad_threshold,
+        groq_api_key=cfg.groq_api_key,
+        answered_speak_delay=cfg.answered_speak_delay_seconds,
+        wait_for_human_audio=cfg.wait_for_human_audio,
+        human_audio_timeout=cfg.human_audio_timeout_seconds,
+        answer_confirm_polls=cfg.answer_confirm_polls,
+        stt_retry_count=cfg.stt_retry_count,
+        vad_silence_frames=cfg.vad_silence_frames,
+        vad_speech_frames=cfg.vad_speech_frames,
+        min_ring_seconds=cfg.min_ring_seconds,
+        max_ring_seconds=cfg.max_ring_seconds,
+        voicemail_detect_seconds=cfg.voicemail_detect_seconds,
+        tts_warmup=cfg.tts_warmup,
+        tts_allow_sapi_fallback=cfg.tts_allow_sapi_fallback,
+        silence_does_not_end_call=cfg.silence_does_not_end_call,
+        use_stt_context=cfg.use_stt_context,
+        max_silence_seconds=cfg.max_silence_seconds,
+        llm_model_realtime=cfg.llm_model_realtime,
+        listen_after_tts_delay_ms=cfg.listen_after_tts_delay_ms,
+        use_thinking_fillers=cfg.use_thinking_fillers,
+        filler_probability=cfg.filler_probability,
+        stream_llm_replies=cfg.stream_llm_replies,
+        voicemail_max_wait_seconds=cfg.voicemail_max_wait_seconds,
+        voicemail_play_after_seconds=cfg.voicemail_play_after_seconds,
+        voicemail_play_on_greeting=cfg.voicemail_play_on_greeting,
+        voicemail_greeting_frames_required=cfg.voicemail_greeting_frames_required,
+        screening_purpose_text=cfg.screening_purpose_text,
+        groq_max_retries_per_minute=_scaled_groq_rate_limit(cfg),
+    )
+
+    calls_completed = 0
     try:
-        for i, contact in enumerate(contacts[: args.limit], start=1):
+        for i, contact in enumerate(contacts, start=1):
+            if cfg.max_calls_per_run > 0 and calls_completed >= cfg.max_calls_per_run:
+                logger.info("Reached max_calls_per_run=%d; stopping batch.", cfg.max_calls_per_run)
+                break
+            if i % 50 == 1:
+                rotate_logs_if_needed()
             if not browser.is_logged_in():
                 raise SystemExit("Google Voice login required.")
-            try:
-                _run_call(
-
-
-                    contact, i, browser, ai, call_logger, logger,
-                    script_dir, voicemail_dir,
-                    args.objective, args.offer,
-                    callback_number,
-                    agent_name, company_name, company_context, company_website,
-                    loopback_device, loopback_device_index, loopback_available,
-                    call_timeout, call_max_duration,
-                    dry_run=False,
-                    realtime=args.realtime,
-                    capture_device=capture_device,
-                    tts_voice=tts_voice,
-                    stt_model=cfg.stt_model,
-                    vad_threshold=cfg.vad_threshold,
-                    groq_api_key=cfg.groq_api_key,
-                    answered_speak_delay=cfg.answered_speak_delay_seconds,
-                    wait_for_human_audio=cfg.wait_for_human_audio,
-                    human_audio_timeout=cfg.human_audio_timeout_seconds,
-                    answer_confirm_polls=cfg.answer_confirm_polls,
-                    stt_retry_count=cfg.stt_retry_count,
-                    vad_silence_frames=cfg.vad_silence_frames,
-                    vad_speech_frames=cfg.vad_speech_frames,
-                    min_ring_seconds=getattr(cfg, "min_ring_seconds", 0.0),
-                    max_ring_seconds=getattr(cfg, "max_ring_seconds", 45.0),
-                    voicemail_detect_seconds=getattr(cfg, "voicemail_detect_seconds", 15.0),
-                    tts_warmup=cfg.tts_warmup,
-                )
-            except WebDriverException as exc:
-                logger.error("Chrome/Google Voice session ended; stopping call loop: %s", exc)
-                break
+            completed_phone: str | None = None
+            for attempt in range(2):
+                try:
+                    completed_phone = _run_call(
+                        contact,
+                        i,
+                        browser,
+                        ai,
+                        call_logger,
+                        logger,
+                        script_dir,
+                        voicemail_dir,
+                        **shared_call_kwargs,
+                    )
+                    break
+                except WebDriverException as exc:
+                    logger.error(
+                        "[%d] Chrome/WebDriver error (attempt %d/2): %s",
+                        i,
+                        attempt + 1,
+                        exc,
+                    )
+                    if attempt == 0 and browser.recover_session():
+                        logger.info("[%d] Browser recovered — retrying contact", i)
+                        continue
+                    logger.error("Stopping call loop — could not recover browser session.")
+                    completed_phone = None
+                    break
+            if completed_phone:
+                mark_completed(fingerprint, completed_phone, i)
+                calls_completed += 1
+            if (
+                cfg.chrome_restart_every_n_calls > 0
+                and calls_completed > 0
+                and calls_completed % cfg.chrome_restart_every_n_calls == 0
+            ):
+                logger.info("Chrome restart interval reached (%d calls); refreshing session", calls_completed)
+                browser.close()
+                browser.launch()
+                if not browser.is_logged_in():
+                    logger.warning("Re-login required after Chrome restart")
+                    if not browser.wait_for_manual_login(timeout=120):
+                        break
             if browser.driver is None:
                 logger.error("Chrome/Google Voice session is no longer available; stopping call loop.")
                 break
-            if call_cooldown_seconds > 0 and not args.dry_run:
+            if call_cooldown_seconds > 0:
                 time.sleep(call_cooldown_seconds)
             else:
-                time.sleep(2)  # brief pause between calls
+                time.sleep(1.0)
 
     finally:
+        browser_holder.clear()
         browser.close()
 
     logger.info("All calls complete. Logs: logs/call_logs.csv | Audio: %s/", output_dir)

@@ -160,7 +160,7 @@ def test_extract_lead_includes_post_call_summary_fields(tmp_path: Path) -> None:
     }
     resp = MagicMock()
     resp.choices[0].message.content = json.dumps(payload)
-    with patch("groq.Groq") as MockGroq:
+    with patch("src.groq_pool.Groq") as MockGroq:
         MockGroq.return_value.chat.completions.create.return_value = resp
         result = extract_lead_from_transcript(
             transcript_path=transcript,

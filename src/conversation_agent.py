@@ -17,10 +17,13 @@ Usage:
 from __future__ import annotations
 
 import logging
+import re
 import time
-from typing import Optional
+from typing import Callable, Iterator, Optional
 
-from groq import Groq
+from groq import Groq  # re-export for tests that patch src.conversation_agent.Groq
+
+from src.groq_pool import GroqKeyPool, get_groq_pool, load_groq_api_keys
 from src.dispatcher_intelligence import (
     DispatcherConversationState,
     build_dynamic_system_prompt,
@@ -45,8 +48,9 @@ YOUR GOAL: qualify the carrier and book a 15-minute dispatch onboarding call.
 PHONE CALL RULES — follow all of these:
 - You are on a live phone call RIGHT NOW. The prospect just answered.
 - Respond ONLY with what you say aloud — no stage directions, labels, or markdown.
-- Every reply must be 1–2 short sentences (hard limit: 30 words).
-- Sound warm, confident, and genuinely helpful — never scripted or pushy.
+- Every reply must be 1 short sentence when possible (hard limit: 18 words).
+- Use contractions (I'm, we're, don't). Sound warm and human — never scripted.
+- You may use tiny backchannels sparingly: yeah, right, got it — then answer.
 - Ask ONE specific qualifying question per turn (equipment type, lanes, dispatch situation).
 - If they raise an objection, acknowledge briefly, then give ONE concrete value point.
 - If they say they're busy: "No problem — when's a better time to reach you?"
@@ -125,23 +129,35 @@ class ConversationAgent:
         company_website: str = "",
         callback_number: str = "+15551234567",
         contact_name: str = "",
+        contact_phone: str = "",
+        rate_limit_per_minute: int = 0,
+        pool: GroqKeyPool | None = None,
     ):
-        if not api_key:
+        if pool is not None:
+            self._pool = pool
+        elif api_key:
+            self._pool = GroqKeyPool([api_key.strip()])
+        elif load_groq_api_keys():
+            self._pool = get_groq_pool()
+        else:
             raise ValueError("api_key is required for ConversationAgent")
-        self._client = Groq(api_key=api_key)
         self.model = model
+        self._rate_limit_per_minute = max(0, rate_limit_per_minute)
         self.agent_name = agent_name
         self.company_name = company_name
         self.company_context = company_context or "Freight dispatch services for owner-operators."
         self.company_website = company_website or ""
         self.callback_number = callback_number
         self.contact_name = contact_name
+        self._contact_phone = (contact_phone or "").strip()
         self.state = DispatcherConversationState()
         self._system = self._build_system_prompt()
         self._history: list[dict] = []
         self._turn_count: int = 0
         self._consecutive_negatives: int = 0
         self._engaged: bool = False
+        self._style_pool = ("casual", "direct", "empathetic")
+        self._turn_style = self._style_pool[0]
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -162,10 +178,23 @@ class ConversationAgent:
             "'Hi there — Tony here at Indus Transports, how\'s it going?' "
             "'Hello, this is Tony with Indus Transports — hope I\'m catching you at a good time.' "
             "'Hey, good to connect — Tony from Indus Transports here, how are you today?' "
-            "Under 18 words. Return ONLY the greeting text, no quotes, no labels."
+            "Under 16 words. Return ONLY the greeting text, no quotes, no labels."
         )
+        from src.call_intelligence import get_opening_hints
+        from src.opening_pool import pick_opening
+
+        good, bad = get_opening_hints(self._contact_phone)
+        avoid = bad[-1] if bad else None
         line = self._raw_complete(prompt, max_tokens=55)
-        # Fallback if LLM returns empty
+        curated = pick_opening(
+            self._contact_phone or "unknown",
+            self.agent_name,
+            self.company_name,
+            llm_line=line,
+            avoid_text=avoid,
+        )
+        if curated:
+            return curated
         if not line or len(line) < 5:
             import random
             fallbacks = [
@@ -194,6 +223,12 @@ class ConversationAgent:
         else:
             self._consecutive_negatives = 0
 
+        vm_phrases = ("leave a message", "after the tone", "not available", "voicemail")
+        if any(p in text_lower for p in vm_phrases):
+            self._history.append({"role": "assistant", "content": ""})
+            return ""
+
+        self._turn_style = self._style_pool[self._turn_count % len(self._style_pool)]
         reply = (
             build_guardrail_reply(self.state, prospect_text)
             or build_pricing_reply(self.state, prospect_text)
@@ -201,6 +236,36 @@ class ConversationAgent:
         )
         self._history.append({"role": "assistant", "content": reply})
         return reply
+
+    def respond_to_streaming(
+        self,
+        prospect_text: str,
+        on_sentence: Callable[[str], None],
+    ) -> str:
+        """Stream LLM output; invoke on_sentence for each completed clause."""
+        self._history.append({"role": "user", "content": prospect_text})
+        self._turn_count += 1
+        update_state_from_utterance(self.state, prospect_text)
+        text_lower = prospect_text.lower()
+        if not self._engaged and any(kw in text_lower for kw in _ENGAGEMENT_KEYWORDS):
+            self._engaged = True
+        if any(signal in text_lower for signal in _NEGATIVE_SIGNALS):
+            self._consecutive_negatives += 1
+        else:
+            self._consecutive_negatives = 0
+
+        fast = (
+            build_guardrail_reply(self.state, prospect_text)
+            or build_pricing_reply(self.state, prospect_text)
+        )
+        if fast:
+            on_sentence(fast)
+            self._history.append({"role": "assistant", "content": fast})
+            return fast
+
+        full = self._complete_stream(on_sentence)
+        self._history.append({"role": "assistant", "content": full})
+        return full
 
     def should_end_call(self) -> bool:
         """True when the agent should politely wrap up the call."""
@@ -268,7 +333,9 @@ class ConversationAgent:
     # ------------------------------------------------------------------ #
 
     def _build_system_prompt(self) -> str:
-        return build_dynamic_system_prompt(
+        from src.call_intelligence import build_prompt_addon
+
+        base = build_dynamic_system_prompt(
             agent_name=self.agent_name,
             company_name=self.company_name,
             company_website=self.company_website,
@@ -277,6 +344,14 @@ class ConversationAgent:
             contact_name=self.contact_name,
             state=self.state,
         )
+        addon = build_prompt_addon(self._contact_phone) if self._contact_phone else ""
+        if addon:
+            return (
+                base
+                + "\n\nPRIOR CALL MEMORY (learn from this — do not repeat past mistakes):\n"
+                + addon
+            )
+        return base
 
     def _complete(self) -> str:
         self._system = self._build_system_prompt()
@@ -284,12 +359,15 @@ class ConversationAgent:
         messages.extend(self._history[-30:])   # long-call memory window plus state summary
         # Shorter max_tokens for rushed carriers reduces latency significantly
         if self.state.carrier_style == "rushed":
-            max_tokens = 55
+            max_tokens = 45
         elif self.state.carrier_style in ("skeptical", "neutral"):
-            max_tokens = 90
+            max_tokens = 70
         else:
-            max_tokens = 130
+            max_tokens = 90
         temperature = 0.65 if self.state.carrier_style == "skeptical" else 0.75
+        from src.groq_rate_limit import acquire_slot
+
+        acquire_slot(self._rate_limit_per_minute)
         try:
             resp = self._chat_complete_with_backoff(
                 model=self.model,
@@ -326,7 +404,9 @@ class ConversationAgent:
         last_exc: Exception | None = None
         for attempt in range(1, len(delays) + 2):
             try:
-                return self._client.chat.completions.create(**kwargs)
+                return self._pool.execute(
+                    lambda client: client.chat.completions.create(**kwargs)
+                )
             except Exception as exc:
                 last_exc = exc
                 msg = str(exc).lower()
@@ -350,3 +430,54 @@ class ConversationAgent:
                 time.sleep(delay_s)
         assert last_exc is not None
         raise last_exc
+
+    def _complete_stream(self, on_sentence: Callable[[str], None]) -> str:
+        from src.groq_rate_limit import acquire_slot
+
+        acquire_slot(getattr(self, "_rate_limit_per_minute", 0))
+        self._system = self._build_system_prompt()
+        messages = [{"role": "system", "content": self._system}]
+        messages.extend(self._history[-30:])
+        max_tokens = 70 if self.state.carrier_style == "rushed" else 90
+        buffer = ""
+        sent_clauses: list[str] = []
+        try:
+            stream = self._pool.execute(
+                lambda client: client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=0.72,
+                    top_p=0.92,
+                    stream=True,
+                )
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                buffer += delta
+                while True:
+                    m = re.search(r"[.!?]\s", buffer)
+                    if not m:
+                        break
+                    clause = buffer[: m.end()].strip()
+                    buffer = buffer[m.end() :].lstrip()
+                    if clause:
+                        clause = _clean_spoken_text(clause)
+                        sent_clauses.append(clause)
+                        on_sentence(clause)
+            tail = _clean_spoken_text(buffer.strip())
+            if tail and (not sent_clauses or tail != sent_clauses[-1]):
+                sent_clauses.append(tail)
+                on_sentence(tail)
+        except Exception as exc:
+            logger.error("LLM stream error: %s", exc)
+            fallback = "Sorry, could you say that again?"
+            on_sentence(fallback)
+            return fallback
+        return " ".join(sent_clauses).strip() or "Sorry, could you say that again?"
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split spoken text into sentence chunks for chunked TTS."""
+    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    return [p.strip() for p in parts if p.strip()]

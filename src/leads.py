@@ -182,18 +182,19 @@ def extract_lead_from_transcript(
         return blank
 
     try:
-        from groq import Groq  # type: ignore
+        from src.groq_pool import pool_for_request
 
-        client = Groq(api_key=groq_api_key)
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": _EXTRACT_SYSTEM},
-                {"role": "user", "content": f"TRANSCRIPT:\n{text[:6000]}"},
-            ],
-            max_tokens=512,
-            temperature=0.1,
-            response_format={"type": "json_object"},
+        resp = pool_for_request(groq_api_key).execute(
+            lambda client: client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": _EXTRACT_SYSTEM},
+                    {"role": "user", "content": f"TRANSCRIPT:\n{text[:6000]}"},
+                ],
+                max_tokens=512,
+                temperature=0.1,
+                response_format={"type": "json_object"},
+            )
         )
         raw = resp.choices[0].message.content.strip()
         data = _parse_json_object(raw)

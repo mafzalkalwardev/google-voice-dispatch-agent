@@ -19,28 +19,59 @@ class CheckResult:
 
 
 def check_env() -> CheckResult:
+    from src.groq_pool import load_groq_api_keys
+
     env_file = BASE_DIR / ".env"
     if not env_file.exists():
         return CheckResult("ENV File", "warn", ".env not found — using system env vars only")
-    api_key = os.getenv("GROQ_API_KEY", "")
-    if not api_key or api_key.startswith("your_"):
-        return CheckResult("ENV File", "fail", ".env found but GROQ_API_KEY is missing or placeholder")
-    return CheckResult("ENV File", "ok", ".env present and GROQ_API_KEY is set")
+    keys = load_groq_api_keys()
+    if not keys:
+        return CheckResult(
+            "ENV File",
+            "fail",
+            ".env found but no valid Groq API keys (GROQ_API_KEY / GROQ_API_KEY_2 / GROQ_API_KEYS)",
+        )
+    if len(keys) == 1:
+        return CheckResult("ENV File", "ok", ".env present and GROQ_API_KEY is set")
+    return CheckResult("ENV File", "ok", f".env present — {len(keys)} Groq API keys configured")
 
 
 def check_groq_api(api_key: Optional[str] = None) -> CheckResult:
-    key = api_key or os.getenv("GROQ_API_KEY", "")
-    if not key or key.startswith("your_"):
+    from src.groq_pool import GroqKeyPool, get_groq_pool, load_groq_api_keys
+
+    keys = list(load_groq_api_keys())
+    if api_key:
+        k = api_key.strip()
+        if k.startswith("your_"):
+            if not keys:
+                return CheckResult("Groq API", "fail", "GROQ_API_KEY not set — cannot connect")
+        elif k not in keys:
+            keys.insert(0, k)
+    if not keys:
         return CheckResult("Groq API", "fail", "GROQ_API_KEY not set — cannot connect")
     try:
-        from groq import Groq  # type: ignore
-        client = Groq(api_key=key)
-        models = client.models.list()
-        count = len(list(models.data))
-        return CheckResult("Groq API", "ok", f"Connected — {count} models available")
-    except Exception as exc:
-        short = str(exc)[:120]
-        return CheckResult("Groq API", "fail", f"Connection failed: {short}")
+        pool = GroqKeyPool(keys)
+    except ValueError:
+        return CheckResult("Groq API", "fail", "No valid Groq API keys configured")
+    ok, total, lines = pool.test_all_keys()
+    summary = "; ".join(lines[:3])
+    if len(lines) > 3:
+        summary += f"; +{len(lines) - 3} more"
+    if ok == 0:
+        return CheckResult("Groq API", "fail", f"All {total} key(s) failed — {summary}")
+    if ok < total:
+        return CheckResult(
+            "Groq API",
+            "warn",
+            f"{ok}/{total} key(s) OK (failover available) — {summary}",
+        )
+    if total == 1:
+        return CheckResult("Groq API", "ok", f"Connected — {lines[0].split(':', 2)[-1].strip()}")
+    return CheckResult(
+        "Groq API",
+        "ok",
+        f"All {total} API keys OK — multi-account failover enabled",
+    )
 
 
 def check_contacts(contacts_file: Optional[Path] = None) -> CheckResult:

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 @pytest.fixture
 def mock_groq():
-    with patch("src.stt.Groq") as MockGroq:
+    with patch("src.groq_pool.Groq") as MockGroq:
         mock_client = MagicMock()
         MockGroq.return_value = mock_client
         yield MockGroq, mock_client
@@ -71,13 +71,20 @@ def test_transcribe_sends_prompt(mock_groq):
     _, mock_client = mock_groq
     mock_client.audio.transcriptions.create.return_value = MagicMock(text="yes I'm interested")
 
-    from src.stt import GroqWhisperSTT
-    stt = GroqWhisperSTT(api_key="test_key")
+    from src.stt import GroqWhisperSTT, _STT_CONTEXT_PREFIX
+    stt = GroqWhisperSTT(api_key="test_key", use_stt_context=False)
     audio = np.random.rand(16000).astype(np.float32) * 0.1
     stt.transcribe(audio, samplerate=16000, prompt="Indus Transports freight dispatch")
 
     call_kwargs = mock_client.audio.transcriptions.create.call_args[1]
     assert call_kwargs.get("prompt") == "Indus Transports freight dispatch"
+
+    stt_ctx = GroqWhisperSTT(api_key="test_key", use_stt_context=True)
+    mock_client.audio.transcriptions.create.reset_mock()
+    mock_client.audio.transcriptions.create.return_value = MagicMock(text="ok")
+    stt_ctx.transcribe(audio, samplerate=16000, prompt="Indus Transports freight dispatch")
+    call_kwargs = mock_client.audio.transcriptions.create.call_args[1]
+    assert call_kwargs.get("prompt") == _STT_CONTEXT_PREFIX + "Indus Transports freight dispatch"
 
 
 def test_transcribe_handles_api_error(mock_groq):
@@ -92,7 +99,11 @@ def test_transcribe_handles_api_error(mock_groq):
     assert result == ""
 
 
-def test_missing_api_key_raises():
+def test_missing_api_key_raises(monkeypatch):
+    for name in ("GROQ_API_KEY", "GROQ_API_KEYS"):
+        monkeypatch.delenv(name, raising=False)
+    for i in range(2, 11):
+        monkeypatch.delenv(f"GROQ_API_KEY_{i}", raising=False)
     from src.stt import GroqWhisperSTT
     with pytest.raises(ValueError, match="api_key"):
         GroqWhisperSTT(api_key="")

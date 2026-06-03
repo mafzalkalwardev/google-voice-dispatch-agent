@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 @pytest.fixture
 def mock_groq():
-    with patch("src.conversation_agent.Groq") as MockGroq:
+    with patch("src.groq_pool.Groq") as MockGroq:
         mock_client = MagicMock()
         MockGroq.return_value = mock_client
         yield MockGroq, mock_client
@@ -18,7 +18,11 @@ def _make_completion(text: str):
     return resp
 
 
-def test_missing_api_key_raises():
+def test_missing_api_key_raises(monkeypatch):
+    for name in ("GROQ_API_KEY", "GROQ_API_KEYS"):
+        monkeypatch.delenv(name, raising=False)
+    for i in range(2, 11):
+        monkeypatch.delenv(f"GROQ_API_KEY_{i}", raising=False)
     from src.conversation_agent import ConversationAgent
     with pytest.raises(ValueError, match="api_key"):
         ConversationAgent(api_key="")

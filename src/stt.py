@@ -18,7 +18,9 @@ import wave
 from typing import Optional
 
 import numpy as np
-from groq import Groq
+from groq import Groq  # re-export for tests that patch src.stt.Groq
+
+from src.groq_pool import GroqKeyPool, get_groq_pool, load_groq_api_keys
 
 logger = logging.getLogger("GoogleVoiceAgent")
 
@@ -42,13 +44,18 @@ class GroqWhisperSTT:
         model: str = "whisper-large-v3-turbo",
         language: str = "en",
         retry_count: int = 2,
+        use_stt_context: bool = True,
     ):
-        if not api_key:
+        if api_key:
+            self._pool = GroqKeyPool([api_key.strip()])
+        elif load_groq_api_keys():
+            self._pool = get_groq_pool()
+        else:
             raise ValueError("api_key is required for GroqWhisperSTT")
-        self._client = Groq(api_key=api_key)
         self.model = model
         self.language = language
         self.retry_count = max(0, retry_count)
+        self.use_stt_context = use_stt_context
         # Tracks the reason for the last empty transcription (for diagnostics)
         self.last_empty_reason: str = ""
 
@@ -94,10 +101,13 @@ class GroqWhisperSTT:
             logger.warning("STT: truncating %.1fs audio to %.0fs", duration, _MAX_DURATION_S)
             audio = audio[: int(_MAX_DURATION_S * samplerate)]
 
-        # Build enriched prompt: prepend freight context before caller-supplied hint.
-        # NOTE: some unit tests expect the raw `prompt` passed by the caller
-        # (without the extra context) to be forwarded to Groq. 
-        enriched_prompt = prompt or ""
+        if self.use_stt_context:
+            if prompt:
+                enriched_prompt = _STT_CONTEXT_PREFIX + prompt
+            else:
+                enriched_prompt = _STT_CONTEXT_PREFIX.strip()
+        else:
+            enriched_prompt = prompt or ""
 
 
         wav_bytes = _float32_to_wav(audio, samplerate)
@@ -114,7 +124,9 @@ class GroqWhisperSTT:
                     prompt=enriched_prompt,
                 )
 
-                result = self._client.audio.transcriptions.create(**kwargs)
+                result = self._pool.execute(
+                    lambda client: client.audio.transcriptions.create(**kwargs)
+                )
                 text = getattr(result, "text", result)
                 transcript = str(text).strip()
                 if transcript:

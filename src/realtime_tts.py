@@ -48,11 +48,13 @@ class RealtimeTTS:
         voice: str = VOICE_GUY,
         use_edge_tts: bool = True,
         use_cache: bool = True,
+        allow_sapi_fallback: bool = False,
         audio_observer: Optional[Callable[[np.ndarray, int], None]] = None,
     ):
         self.device_index = device_index
         self.voice = voice
         self._use_edge = use_edge_tts and _edge_available()
+        self._allow_sapi_fallback = allow_sapi_fallback
         self._lock = threading.Lock()
         self._speaking = threading.Event()
         self._audio_observer = audio_observer
@@ -68,12 +70,18 @@ class RealtimeTTS:
         from src.voice_playback import describe_audio_device
 
         logger.info(
-            "RealtimeTTS: engine=%s voice=%s cache=%s selected_output_device=%s",
+            "RealtimeTTS: engine=%s voice=%s cache=%s sapi_fallback=%s device=%s",
             engine,
             voice,
             "enabled" if self._cache else "disabled",
+            self._allow_sapi_fallback,
             describe_audio_device(device_index),
         )
+
+    def prewarm_line(self, text: str) -> None:
+        """Pre-synthesize an exact phrase (e.g. opening) so it matches live reply voice."""
+        if self._cache is not None and text.strip():
+            self._cache.ensure(text)
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -113,6 +121,31 @@ class RealtimeTTS:
     def is_speaking(self) -> bool:
         return self._speaking.is_set()
 
+    def play_filler(self) -> None:
+        """Play a short cached acknowledgement without interrupting current speech."""
+        if self._cache is None:
+            return
+        phrase = self._cache.random_filler()
+        if self._cache.get(phrase):
+            threading.Thread(
+                target=self.speak,
+                args=(phrase, False),
+                daemon=True,
+                name="TTSFiller",
+            ).start()
+
+    def speak_text_chunked(self, text: str, interrupt: bool = True) -> None:
+        """Speak each sentence sequentially for lower perceived latency."""
+        from src.conversation_agent import split_sentences
+
+        parts = split_sentences(text)
+        if not parts:
+            return
+        if interrupt:
+            self.stop()
+        for i, part in enumerate(parts):
+            self.speak(part, interrupt=(interrupt and i == 0))
+
     def set_audio_observer(self, callback: Optional[Callable[[np.ndarray, int], None]]) -> None:
         """Receive synthesized Tony audio when playback starts."""
         self._audio_observer = callback
@@ -136,23 +169,45 @@ class RealtimeTTS:
                     logger.debug("RealtimeTTS: cache playback failed (%s); falling through to synthesis", exc)
 
         if self._use_edge:
-            try:
-                logger.info("RealtimeTTS: generating speech with edge-tts (%d chars)", len(text))
-                data, rate = _edge_synthesize(text, self.voice)
-            except Exception as exc:
-                logger.warning("edge-tts synthesis failed (%s); falling back to pyttsx3", exc)
-            else:
-                duration = len(data) / float(rate) if rate else 0.0
-                logger.info(
-                    "RealtimeTTS: audio generated in memory (engine=edge-tts, rate=%d, duration=%.2fs)",
-                    rate,
-                    duration,
+            last_exc: Exception | None = None
+            for attempt in range(1, 3):
+                try:
+                    logger.info(
+                        "RealtimeTTS: generating speech with edge-tts (%d chars, attempt %d)",
+                        len(text),
+                        attempt,
+                    )
+                    data, rate = _edge_synthesize(text, self.voice)
+                    duration = len(data) / float(rate) if rate else 0.0
+                    logger.info(
+                        "RealtimeTTS: audio generated (engine=edge-tts, voice=%s, rate=%d, duration=%.2fs)",
+                        self.voice,
+                        rate,
+                        duration,
+                    )
+                    self._notify_audio_observer(data, rate)
+                    _play_numpy_to_device(data, rate, self.device_index)
+                    return
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning("edge-tts attempt %d failed: %s", attempt, exc)
+            if self._allow_sapi_fallback:
+                logger.warning(
+                    "RealtimeTTS: edge-tts failed after retries (%s); using pyttsx3 fallback",
+                    last_exc,
                 )
-                self._notify_audio_observer(data, rate)
-                _play_numpy_to_device(data, rate, self.device_index)
+                _pyttsx3_to_device(text, self.device_index, self._audio_observer)
                 return
-        logger.info("RealtimeTTS: generating fallback TTS WAV with pyttsx3 (%d chars)", len(text))
-        _pyttsx3_to_device(text, self.device_index, self._audio_observer)
+            logger.error(
+                "RealtimeTTS: edge-tts failed and SAPI fallback is disabled — skipping playback: %s",
+                last_exc,
+            )
+            return
+        if self._allow_sapi_fallback:
+            logger.info("RealtimeTTS: generating fallback TTS WAV with pyttsx3 (%d chars)", len(text))
+            _pyttsx3_to_device(text, self.device_index, self._audio_observer)
+        else:
+            logger.error("RealtimeTTS: edge-tts unavailable and SAPI fallback is disabled")
 
     def _notify_audio_observer(self, data: np.ndarray, samplerate: int) -> None:
         callback = self._audio_observer
@@ -207,7 +262,19 @@ def _edge_synthesize(text: str, voice: str) -> tuple[np.ndarray, int]:
                 chunks.append(chunk["data"])
         return b"".join(chunks)
 
-    mp3_bytes = asyncio.run(_gather())
+    try:
+        asyncio.get_running_loop()
+        running_async = True
+    except RuntimeError:
+        running_async = False
+
+    if running_async:
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            mp3_bytes = pool.submit(asyncio.run, _gather()).result()
+    else:
+        mp3_bytes = asyncio.run(_gather())
     return _decode_mp3(mp3_bytes)
 
 
@@ -293,3 +360,21 @@ def _play_numpy_to_device(data: np.ndarray, samplerate: int, device_index: int) 
     from src.voice_playback import _stream_audio_to_device
 
     _stream_audio_to_device(data.astype(np.float32), samplerate, device_index, block=True)
+
+
+def save_edge_tts_wav(text: str, output_path: str | Path, voice: str = VOICE_GUY) -> Path:
+    """Write voicemail/script audio with the same edge-tts voice as live calls."""
+    import soundfile as sf
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not text.strip():
+        raise ValueError("Cannot synthesize empty text")
+    if not _edge_available():
+        from src.tts import save_text_to_speech
+
+        return save_text_to_speech(text, output_path)
+    data, rate = _edge_synthesize(text, voice)
+    sf.write(str(output_path), data, rate)
+    logger.info("edge-tts WAV saved: %s (%d bytes)", output_path, output_path.stat().st_size)
+    return output_path
