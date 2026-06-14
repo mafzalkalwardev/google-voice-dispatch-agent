@@ -527,3 +527,10 @@ Local editor folders, generated test caches, temporary build folders, private ru
 <div align="center">
   <strong>Built for practical AI calling automation: careful state detection, real logs, real audio routing, and a Windows app path.</strong>
 </div>
+
+## Screenshots
+
+![google-voice-dispatch-agent dashboard](docs/screenshots/app.png)
+
+[Demo video](docs/screenshots/demo.webm)
+
