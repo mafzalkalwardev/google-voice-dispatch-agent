@@ -91,6 +91,10 @@ It can run as a console app, a FastAPI operator console, or a packaged Windows E
 
 ---
 
+## Screenshots
+
+![Application screenshot](docs/screenshots/app.png)
+
 ## Why This Exists
 
 Most outbound AI voice demos assume a telephony API. This project is different: it works around the practical reality of Google Voice running in a browser. That means the hard parts are not only AI responses. The hard parts are state detection, browser DOM drift, audio routing, ringing safety, voicemail timing, and long-running operational reliability.
