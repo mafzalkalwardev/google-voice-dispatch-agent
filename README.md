@@ -533,4 +533,3 @@ Local editor folders, generated test caches, temporary build folders, private ru
 ![google-voice-dispatch-agent dashboard](docs/screenshots/app.png)
 
 [Demo video](docs/screenshots/demo.webm)
-
