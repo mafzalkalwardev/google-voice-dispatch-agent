@@ -1,11 +1,47 @@
 import logging
 import time
 
-from groq import Groq  # re-export for tests that patch src.ai_groq.Groq
-
-from src.groq_pool import GroqKeyPool, get_groq_pool, load_groq_api_keys
+from groq import Groq
 
 logger = logging.getLogger("GoogleVoiceAgent")
+
+_SPECTRUM_CONTEXT = (
+    "Spectrum Business recently expanded its pure fiber network in the prospect's area. "
+    "The offer is faster business internet speeds, more reliable phone services, "
+    "cost-effective packages, and improved overall performance. The goal is to schedule "
+    "a technician visit over the next two weeks, Monday through Friday, between 8:00 AM and 4:00 PM."
+)
+
+_SPECTRUM_STATIC_SCRIPT = (
+    "Hi, this is {agent_name} calling from Spectrum Business. How are you doing today? "
+    "May I please speak with the owner or the person who manages your internet and phone services? "
+    "The reason for my call is to inform you that Spectrum has recently expanded our pure fiber network in your area. "
+    "Because of this, we're now able to offer businesses faster internet speeds, more reliable phone services, "
+    "and cost-effective packages with improved overall performance. "
+    "What we'd like to do is schedule a quick visit from one of our technicians to install the services "
+    "and get everything set up for your business. "
+    "We currently have appointments available over the next two weeks, Monday through Friday, between 8:00 AM and 4:00 PM. "
+    "What day and time would work best for you?"
+)
+
+_SPECTRUM_CALL_SCRIPT_SYSTEM = (
+    "You are Jason calling from Spectrum Business. Write one natural spoken outbound "
+    "business call script for pure fiber internet and phone services. Follow this sequence: "
+    "greeting, ask for the owner or internet/phone decision maker, explain Spectrum expanded "
+    "the pure fiber network nearby, mention faster internet speeds, reliable phone services, "
+    "cost-effective packages, and improved performance, then ask to schedule a technician "
+    "visit over the next two weeks, Monday through Friday, 8:00 AM to 4:00 PM. "
+    "Do not use markdown, labels, or stage directions. Do not mention freight, dispatch, "
+    "trucks, carriers, lanes, or Indus. Do not guarantee price or availability."
+)
+
+_SPECTRUM_VOICEMAIL_SYSTEM = (
+    "You are Jason leaving a professional voicemail from Spectrum Business. Keep it under "
+    "30 seconds. Mention the pure fiber network expansion, faster business internet, more "
+    "reliable phone services, cost-effective packages, and a technician visit available "
+    "Monday through Friday, 8:00 AM to 4:00 PM over the next two weeks. Include the callback "
+    "number if provided. Do not mention freight, dispatch, trucks, carriers, lanes, or Indus."
+)
 
 _CALL_SCRIPT_SYSTEM = (
     "You are a top-performing but ethical freight dispatch sales agent representing a US "
@@ -19,7 +55,7 @@ _CALL_SCRIPT_SYSTEM = (
     "soft skepticism bridge (e.g., acknowledge they may already have dispatch covered). "
     "Do not use labels, stage directions, bullets, or quotation marks. "
     "Do not guarantee earnings, do not invent facts, and do not sound pushy. "
-    "Keep the full spoken script under 75 words. Sound like a real person on the phone."
+    "Keep the full spoken script under 95 words."
 )
 
 _VOICEMAIL_SYSTEM = (
@@ -28,8 +64,7 @@ _VOICEMAIL_SYSTEM = (
     "70 words. Include: brief greeting with agent name and company, specific reason "
     "for calling tied to the carrier's equipment type if known, one concrete value "
     "offer (load finding, rate negotiation, or paperwork), and callback number stated "
-    "twice. Sound warm, direct, and credible like a human. Under 65 words. "
-    "Do not guarantee earnings or specific rates."
+    "twice. Sound warm, direct, and credible. Do not guarantee earnings or specific rates."
 )
 
 _EQUIPMENT_CONTEXT: dict[str, str] = {
@@ -82,51 +117,25 @@ _EQUIPMENT_CONTEXT: dict[str, str] = {
 
 
 class GroqAgent:
-    def __init__(
-        self,
-        api_key: str = "",
-        model: str = "llama-3.3-70b-versatile",
-        *,
-        pool: GroqKeyPool | None = None,
-    ):
-        if pool is not None:
-            self._pool = pool
-        elif api_key:
-            self._pool = GroqKeyPool([api_key.strip()])
-        elif load_groq_api_keys():
-            self._pool = get_groq_pool()
-        else:
+    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
+        if not api_key:
             raise ValueError("api_key is required for GroqAgent")
+        self._client = Groq(api_key=api_key)
         self.model = model
 
-    _CALL_FALLBACK = (
-        "Hi, this is Tony with Indus Transports LLC. "
-        "I'm calling because we help carriers keep dispatch moving with less "
-        "broker paperwork delays and more consistent load options. "
-        "Are you currently running Dry Van, Reefer, or Flatbed?"
-    )
-    _VOICEMAIL_FALLBACK = (
-        "Hi, this is Tony with Indus Transports LLC. "
-        "I'm following up about dedicated dispatch support for your trucking operation. "
-        "We help with load finding, rate negotiation, and paperwork. "
-        "Please call us back at the number on your caller ID. Thanks."
-    )
-
-    def _complete(
-        self,
-        system: str,
-        user: str,
-        max_tokens: int = 512,
-        *,
-        fallback: str | None = None,
-    ) -> str:
+    def _complete(self, system: str, user: str, max_tokens: int = 512) -> str:
         """Call Groq with simple retry/backoff on rate-limit errors.
 
         If the API fails even after retries, return a safe fallback so the
         dialing loop doesn't crash or go silent.
         """
 
-        fallback_text = fallback or self._CALL_FALLBACK
+        fallback = (
+            "Hi, this is Tony with Indus Transports LLC. "
+            "I’m calling because we help carriers keep dispatch moving with less "
+            "broker paperwork delays and more consistent load options. "
+            "Are you currently running Dry Van, Reefer, or Flatbed?"
+        )
 
 
         delays = [2, 5, 10]
@@ -134,22 +143,20 @@ class GroqAgent:
 
         for attempt in range(3):
             try:
-                response = self._pool.execute(
-                    lambda client: client.chat.completions.create(
-                        model=self.model,
-                        messages=[
-                            {"role": "system", "content": system},
-                            {"role": "user", "content": user},
-                        ],
-                        max_tokens=max_tokens,
-                        temperature=0.72,
-                    )
+                response = self._client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=0.72,
                 )
                 text = response.choices[0].message.content.strip()
                 if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
                     text = text[1:-1].strip()
                 return text
-            except Exception as exc:
+            except Exception as exc:  # groq raises library-specific exceptions
                 last_exc = exc
                 msg = str(exc).lower()
                 is_rate_limited = (
@@ -172,10 +179,11 @@ class GroqAgent:
                     time.sleep(delay_s)
                     continue
 
+                # Non-rate-limit errors (or last attempt) — break to fallback.
                 break
 
         logger.error("Groq completion failed; using fallback. Error: %s", last_exc)
-        return fallback_text
+        return fallback
 
 
     def generate_call_script(
@@ -190,6 +198,18 @@ class GroqAgent:
         company_website: str = "",
         truck_type: str = "",
     ) -> str:
+        if _is_spectrum_company(company_name, company_context):
+            user_prompt = (
+                f"Write the spoken Spectrum Business call script for {agent_name} calling {contact_name}. "
+                f"Objective: {objective}. Company context: {company_context or _SPECTRUM_CONTEXT}. "
+                f"Contact context: {context or 'No extra contact context.'} "
+                "Keep the script faithful to the provided Spectrum Business campaign."
+            )
+            text = self._complete(_SPECTRUM_CALL_SCRIPT_SYSTEM, user_prompt, max_tokens=360)
+            if _looks_like_freight_text(text):
+                return _SPECTRUM_STATIC_SCRIPT.format(agent_name=agent_name)
+            return text or _SPECTRUM_STATIC_SCRIPT.format(agent_name=agent_name)
+
         context_block = (
             f"Contact context: {context}." if context else "No extra contact context."
         )
@@ -221,6 +241,17 @@ class GroqAgent:
         company_context: str = "",
         truck_type: str = "",
     ) -> str:
+        if _is_spectrum_company(company_name, company_context):
+            user_prompt = (
+                f"Leave a voicemail from {agent_name} at Spectrum Business for {contact_name}. "
+                f"The offer: {offer_summary or _SPECTRUM_CONTEXT}. "
+                f"Callback number: {callback_number}."
+            )
+            text = self._complete(_SPECTRUM_VOICEMAIL_SYSTEM, user_prompt, max_tokens=180)
+            if _looks_like_freight_text(text):
+                return _spectrum_voicemail_fallback(agent_name, callback_number)
+            return text or _spectrum_voicemail_fallback(agent_name, callback_number)
+
         equipment_block = (
             f"Carrier equipment: {truck_type}. {_EQUIPMENT_CONTEXT.get(truck_type, '')}"
             if truck_type else ""
@@ -232,9 +263,39 @@ class GroqAgent:
             f"{equipment_block} "
             f"Callback number: {callback_number}."
         )
-        return self._complete(
-            _VOICEMAIL_SYSTEM,
-            user_prompt,
-            max_tokens=180,
-            fallback=self._VOICEMAIL_FALLBACK,
+        return self._complete(_VOICEMAIL_SYSTEM, user_prompt, max_tokens=180)
+
+
+def _is_spectrum_company(company_name: str, company_context: str = "") -> bool:
+    text = f"{company_name} {company_context}".lower()
+    return "spectrum" in text or "pure fiber" in text or "business internet" in text
+
+
+def _looks_like_freight_text(text: str) -> bool:
+    lower = (text or "").lower()
+    return any(
+        term in lower
+        for term in (
+            "dispatch",
+            "carrier",
+            "truck",
+            "freight",
+            "load",
+            "lane",
+            "dry van",
+            "reefer",
+            "flatbed",
+            "indus",
         )
+    )
+
+
+def _spectrum_voicemail_fallback(agent_name: str, callback_number: str) -> str:
+    callback = f" Please call me back at {callback_number}." if callback_number else ""
+    return (
+        f"Hi, this is {agent_name} calling from Spectrum Business. "
+        "Spectrum recently expanded our pure fiber network in your area, and we can discuss faster business internet, "
+        "more reliable phone services, and cost-effective packages. "
+        "We have technician visits available Monday through Friday, 8:00 AM to 4:00 PM over the next two weeks."
+        f"{callback}"
+    )

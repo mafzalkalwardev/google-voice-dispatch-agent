@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
-import random
 import threading
 from typing import Dict, Optional
 
@@ -24,27 +23,28 @@ logger = logging.getLogger("GoogleVoiceAgent")
 
 # Common phrases to pre-generate at startup.
 # Keep this list short (< 20 entries) so warmup completes quickly.
-FILLER_PHRASES = [
-    "Got it.",
-    "Sure.",
-    "Mm-hmm.",
-    "Right.",
-    "One sec.",
-    "Okay.",
-]
-
 _WARMUP_PHRASES = [
     # Filler / thinking acknowledgements
-    *FILLER_PHRASES,
+    "Got it.",
+    "Sure.",
     "Absolutely.",
     "Of course.",
+    "One moment.",
     # Mishear fallbacks
     "Sorry, could you say that again?",
+    "Sorry, I didn't catch that clearly. Could you repeat that?",
     "I didn't catch that — could you repeat?",
     # Common objection starters
     "No problem at all.",
     "I understand.",
     "That makes sense.",
+    # Spectrum Business common live-call phrases
+    "Hi, this is Jason calling from Spectrum Business. How are you doing today? Are you the person who handles internet and phone services for the business?",
+    "Great. Who is your current internet or phone provider?",
+    "No problem. Who would be the right person to speak with about internet and phone services?",
+    "No problem. What day and time is better for a quick callback?",
+    "Pricing depends on location and service needs. Who are you using now for internet or phone service?",
+    "That is okay. Many businesses review options before renewal; when does your current contract expire?",
     # Common goodbye
     "Thanks for your time, take care!",
     "Have a great day!",
@@ -99,47 +99,10 @@ class TTSCache:
         with self._lock:
             self._cache[key] = audio_bytes
 
-    def ensure(self, text: str) -> bool:
-        """Synchronously generate and cache one phrase (same voice as warmup). Returns True if cached."""
-        phrase = text.strip()
-        if not phrase:
-            return False
-        if self.get(phrase):
-            return True
-        try:
-            import edge_tts  # type: ignore
-        except ImportError:
-            return False
-
-        async def _one() -> bytes:
-            communicate = edge_tts.Communicate(phrase, self.tts_voice)
-            buf = io.BytesIO()
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    buf.write(chunk["data"])
-            return buf.getvalue()
-
-        try:
-            loop = asyncio.new_event_loop()
-            try:
-                audio_bytes = loop.run_until_complete(_one())
-            finally:
-                loop.close()
-            if audio_bytes:
-                self.put(phrase, audio_bytes)
-                logger.info("[TTS_CACHE] pre-cached call phrase (%d bytes): %s", len(audio_bytes), phrase[:60])
-                return True
-        except Exception as exc:
-            logger.warning("[TTS_CACHE] could not pre-cache phrase: %s", exc)
-        return False
-
     def size(self) -> int:
         """Number of cached phrases."""
         with self._lock:
             return len(self._cache)
-
-    def random_filler(self) -> str:
-        return random.choice(FILLER_PHRASES)
 
     # ------------------------------------------------------------------ #
     # Internal

@@ -14,19 +14,20 @@ _DEFAULTS = {
     "contacts_file": str(DATA_DIR / "contacts.xlsx"),
     "profile_name": "sales_profile",
     "callback_number": "",
-    "agent_name": "Tony",
-    "company_name": "Indus Transports LLC",
-    "company_website": "https://industransports.online/",
+    "agent_name": "Jason",
+    "company_name": "FT Solutions",
+    "company_website": "",
     "company_context": (
-        "Indus Transports LLC helps owner-operators and small trucking companies "
-        "find high-paying freight loads nationwide with dedicated dispatchers, "
-        "rate negotiation, paperwork/payment support, all equipment types, "
-        "48-state coverage, and 24/7 support. Website says carriers can average "
-        "$12K+ weekly gross, but do not guarantee earnings."
+        "FT Solutions operates an AI calling workflow for the Spectrum Business "
+        "campaign. Spectrum Business has recently expanded its pure fiber network "
+        "in the prospect's area. The call offers faster business internet speeds, "
+        "more reliable phone services, cost-effective packages, and improved "
+        "overall performance. The goal is to schedule a technician visit within "
+        "the next two weeks, Monday through Friday, between 8:00 AM and 4:00 PM."
     ),
     "groq_model": "llama-3.3-70b-versatile",
-    "llm_model_realtime": "llama-3.1-8b-instant",
-    "llm_model_batch": "",
+    "rotation_minutes": 60,
+    "autocut_seconds": 15,
     "loopback_device": "CABLE Input",
     "call_timeout": 60,
     "call_max_duration": 90,
@@ -36,40 +37,21 @@ _DEFAULTS = {
     "stt_model": "whisper-large-v3-turbo",
     "vad_threshold": 0.015,
     # Answer detection — controls when Tony first speaks after CONNECTED is detected
-    "answered_speak_delay_seconds": 1.5,  # reduced: 4.0s caused early hang-ups; 1.5s is better
+    "answered_speak_delay_seconds": 0.6,  # short pickup pause; long delays cause hang-ups
     "wait_for_human_audio": True,         # listen for inbound audio before speaking
-    "human_audio_timeout_seconds": 8.0,   # max seconds to listen before speaking anyway
+    "human_audio_timeout_seconds": 2.5,   # max seconds to listen before speaking anyway
     "answer_confirm_polls": 2,            # consecutive DOM polls required to confirm CONNECTED
     "min_ring_seconds": 2.0,              # ignore transient DOM cues immediately after dialing
     "max_ring_seconds": 45.0,             # stop waiting for no-answer calls after this window
     "voicemail_detect_seconds": 15.0,     # active voicemail cue window after answer evidence
     "call_cooldown_seconds": 10.0,        # pause between live calls
     # VAD tuning — operators can adjust from Settings page
-    "vad_silence_frames": 8,              # frames of silence before utterance ends (8×30ms=240ms)
-    "listen_after_tts_delay_ms": 150,
-    "use_thinking_fillers": True,
-    "filler_probability": 0.7,
-    "stream_llm_replies": True,
+    "vad_silence_frames": 7,              # frames of silence before utterance ends (7x30ms=210ms)
     "vad_speech_frames": 2,               # frames of speech required to start utterance
     # STT reliability
     "stt_retry_count": 2,                 # number of STT retries on empty/failure
     # TTS pre-warming
     "tts_warmup": True,                   # pre-generate common phrases at startup
-    "tts_allow_sapi_fallback": False,     # keep one neural voice; avoid Windows Zira mixing in
-    "silence_does_not_end_call": True,
-    "use_stt_context": True,
-    "max_silence_seconds": 8.0,
-    "voicemail_max_wait_seconds": 8.0,
-    "voicemail_play_on_greeting": True,
-    "voicemail_play_after_seconds": 4.0,
-    "voicemail_message_max_seconds": 28.0,
-    "voicemail_greeting_frames_required": 6,
-    "screening_purpose_text": "freight dispatch and load support",
-    "chrome_restart_every_n_calls": 75,
-    "max_calls_per_run": 0,
-    "groq_max_retries_per_minute": 60,
-    "avoid_gv_page_reload": True,
-    "use_call_intelligence": True,
 }
 
 
@@ -108,21 +90,16 @@ class Config:
         self.company_context = os.getenv(
             "COMPANY_CONTEXT", j.get("company_context", _DEFAULTS["company_context"])
         )
-        from src.groq_pool import load_groq_api_keys
-
-        self.groq_api_keys: list[str] = load_groq_api_keys()
-        self.groq_api_key: str = (
-            self.groq_api_keys[0] if self.groq_api_keys else os.getenv("GROQ_API_KEY", "")
-        )
+        self.groq_api_key: str = os.getenv("GROQ_API_KEY", "")
         self.groq_model: str = os.getenv(
             "GROQ_MODEL", j.get("groq_model", _DEFAULTS["groq_model"])
         )
-        self.llm_model_realtime: str = os.getenv(
-            "LLM_MODEL_REALTIME",
-            j.get("llm_model_realtime", _DEFAULTS["llm_model_realtime"]),
-        ) or self.groq_model
-        batch_model = os.getenv("LLM_MODEL_BATCH", j.get("llm_model_batch", _DEFAULTS["llm_model_batch"]))
-        self.llm_model_batch: str = batch_model or self.groq_model
+        self.rotation_minutes: int = int(
+            os.getenv("ROTATION_MINUTES", j.get("rotation_minutes", _DEFAULTS["rotation_minutes"]))
+        )
+        self.autocut_seconds: int = int(
+            os.getenv("AUTOCUT_SECONDS", j.get("autocut_seconds", _DEFAULTS["autocut_seconds"]))
+        )
         self.loopback_device: str = os.getenv(
             "LOOPBACK_DEVICE", j.get("loopback_device", _DEFAULTS["loopback_device"])
         )
@@ -180,98 +157,11 @@ class Config:
         self.tts_warmup: bool = os.getenv(
             "TTS_WARMUP", str(j.get("tts_warmup", _DEFAULTS["tts_warmup"]))
         ).lower() not in ("false", "0", "no")
-        self.tts_allow_sapi_fallback: bool = os.getenv(
-            "TTS_ALLOW_SAPI_FALLBACK",
-            str(j.get("tts_allow_sapi_fallback", _DEFAULTS["tts_allow_sapi_fallback"])),
-        ).lower() in ("true", "1", "yes")
-        self.silence_does_not_end_call: bool = os.getenv(
-            "SILENCE_DOES_NOT_END_CALL",
-            str(j.get("silence_does_not_end_call", _DEFAULTS["silence_does_not_end_call"])),
-        ).lower() not in ("false", "0", "no")
-        self.use_stt_context: bool = os.getenv(
-            "USE_STT_CONTEXT", str(j.get("use_stt_context", _DEFAULTS["use_stt_context"]))
-        ).lower() not in ("false", "0", "no")
-        self.max_silence_seconds: float = float(
-            os.getenv("MAX_SILENCE_SECONDS", j.get("max_silence_seconds", _DEFAULTS["max_silence_seconds"]))
-        )
-        self.listen_after_tts_delay_ms: int = int(
-            os.getenv(
-                "LISTEN_AFTER_TTS_DELAY_MS",
-                j.get("listen_after_tts_delay_ms", _DEFAULTS["listen_after_tts_delay_ms"]),
-            )
-        )
-        self.use_thinking_fillers: bool = os.getenv(
-            "USE_THINKING_FILLERS",
-            str(j.get("use_thinking_fillers", _DEFAULTS["use_thinking_fillers"])),
-        ).lower() not in ("false", "0", "no")
-        self.filler_probability: float = float(
-            os.getenv("FILLER_PROBABILITY", j.get("filler_probability", _DEFAULTS["filler_probability"]))
-        )
-        self.stream_llm_replies: bool = os.getenv(
-            "STREAM_LLM_REPLIES",
-            str(j.get("stream_llm_replies", _DEFAULTS["stream_llm_replies"])),
-        ).lower() not in ("false", "0", "no")
-        self.voicemail_max_wait_seconds: float = float(
-            os.getenv(
-                "VOICEMAIL_MAX_WAIT_SECONDS",
-                j.get("voicemail_max_wait_seconds", _DEFAULTS["voicemail_max_wait_seconds"]),
-            )
-        )
-        self.voicemail_play_on_greeting: bool = os.getenv(
-            "VOICEMAIL_PLAY_ON_GREETING",
-            str(j.get("voicemail_play_on_greeting", _DEFAULTS["voicemail_play_on_greeting"])),
-        ).lower() not in ("false", "0", "no")
-        self.voicemail_play_after_seconds: float = float(
-            os.getenv(
-                "VOICEMAIL_PLAY_AFTER_SECONDS",
-                j.get("voicemail_play_after_seconds", _DEFAULTS["voicemail_play_after_seconds"]),
-            )
-        )
-        self.voicemail_message_max_seconds: float = float(
-            os.getenv(
-                "VOICEMAIL_MESSAGE_MAX_SECONDS",
-                j.get("voicemail_message_max_seconds", _DEFAULTS["voicemail_message_max_seconds"]),
-            )
-        )
-        self.voicemail_greeting_frames_required: int = int(
-            os.getenv(
-                "VOICEMAIL_GREETING_FRAMES_REQUIRED",
-                j.get("voicemail_greeting_frames_required", _DEFAULTS["voicemail_greeting_frames_required"]),
-            )
-        )
-        self.screening_purpose_text: str = os.getenv(
-            "SCREENING_PURPOSE_TEXT",
-            j.get("screening_purpose_text", _DEFAULTS["screening_purpose_text"]),
-        )
-        self.chrome_restart_every_n_calls: int = int(
-            os.getenv(
-                "CHROME_RESTART_EVERY_N_CALLS",
-                j.get("chrome_restart_every_n_calls", _DEFAULTS["chrome_restart_every_n_calls"]),
-            )
-        )
-        self.max_calls_per_run: int = int(
-            os.getenv("MAX_CALLS_PER_RUN", j.get("max_calls_per_run", _DEFAULTS["max_calls_per_run"]))
-        )
-        self.groq_max_retries_per_minute: int = int(
-            os.getenv(
-                "GROQ_MAX_RETRIES_PER_MINUTE",
-                j.get("groq_max_retries_per_minute", _DEFAULTS["groq_max_retries_per_minute"]),
-            )
-        )
-        self.avoid_gv_page_reload: bool = os.getenv(
-            "AVOID_GV_PAGE_RELOAD",
-            str(j.get("avoid_gv_page_reload", _DEFAULTS["avoid_gv_page_reload"])),
-        ).lower() not in ("false", "0", "no")
-        self.use_call_intelligence: bool = os.getenv(
-            "USE_CALL_INTELLIGENCE",
-            str(j.get("use_call_intelligence", _DEFAULTS["use_call_intelligence"])),
-        ).lower() not in ("false", "0", "no")
 
     def validate(self) -> None:
-        if not self.groq_api_keys:
+        if not self.groq_api_key or self.groq_api_key.startswith("your_"):
             raise SystemExit(
-                "No Groq API keys configured. Copy .env.example to .env and set GROQ_API_KEY "
-                "(and optionally GROQ_API_KEY_2, GROQ_API_KEY_3, or GROQ_API_KEYS)."
+                "GROQ_API_KEY not configured. Copy .env.example to .env and set a real key."
             )
         if self.groq_model in ("groq-alpha", ""):
             raise SystemExit(

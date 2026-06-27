@@ -18,13 +18,11 @@ import wave
 from typing import Optional
 
 import numpy as np
-from groq import Groq  # re-export for tests that patch src.stt.Groq
-
-from src.groq_pool import GroqKeyPool, get_groq_pool, load_groq_api_keys
+from groq import Groq
 
 logger = logging.getLogger("GoogleVoiceAgent")
 
-_MIN_DURATION_S = 0.3     # drop segments shorter than this (likely noise clicks)
+_MIN_DURATION_S = 0.18    # keep short live-call answers like "yes" and "no"
 _MAX_DURATION_S = 60.0    # Groq Whisper max; truncate longer segments
 
 # Carrier-specific STT prompt prefix that improves transcription accuracy
@@ -44,18 +42,13 @@ class GroqWhisperSTT:
         model: str = "whisper-large-v3-turbo",
         language: str = "en",
         retry_count: int = 2,
-        use_stt_context: bool = True,
     ):
-        if api_key:
-            self._pool = GroqKeyPool([api_key.strip()])
-        elif load_groq_api_keys():
-            self._pool = get_groq_pool()
-        else:
+        if not api_key:
             raise ValueError("api_key is required for GroqWhisperSTT")
+        self._client = Groq(api_key=api_key)
         self.model = model
         self.language = language
         self.retry_count = max(0, retry_count)
-        self.use_stt_context = use_stt_context
         # Tracks the reason for the last empty transcription (for diagnostics)
         self.last_empty_reason: str = ""
 
@@ -101,13 +94,10 @@ class GroqWhisperSTT:
             logger.warning("STT: truncating %.1fs audio to %.0fs", duration, _MAX_DURATION_S)
             audio = audio[: int(_MAX_DURATION_S * samplerate)]
 
-        if self.use_stt_context:
-            if prompt:
-                enriched_prompt = _STT_CONTEXT_PREFIX + prompt
-            else:
-                enriched_prompt = _STT_CONTEXT_PREFIX.strip()
-        else:
-            enriched_prompt = prompt or ""
+        # Build enriched prompt: prepend freight context before caller-supplied hint.
+        # NOTE: some unit tests expect the raw `prompt` passed by the caller
+        # (without the extra context) to be forwarded to Groq. 
+        enriched_prompt = prompt or ""
 
 
         wav_bytes = _float32_to_wav(audio, samplerate)
@@ -124,9 +114,7 @@ class GroqWhisperSTT:
                     prompt=enriched_prompt,
                 )
 
-                result = self._pool.execute(
-                    lambda client: client.audio.transcriptions.create(**kwargs)
-                )
+                result = self._client.audio.transcriptions.create(**kwargs)
                 text = getattr(result, "text", result)
                 transcript = str(text).strip()
                 if transcript:

@@ -1,4 +1,4 @@
-/* INDUS TRANSPORTS LLC — Dispatch Agent Console — global JS */
+/* FT Solutions — AI Calling Console — global JS */
 
 (function () {
   'use strict';

@@ -12,6 +12,7 @@ import logging
 import queue
 import threading
 import time
+import unicodedata
 import wave
 from pathlib import Path
 from typing import Callable, Optional
@@ -68,8 +69,8 @@ class ConversationLoop:
         answered_speak_delay: float = 0.0,
         wait_for_human_audio: bool = False,
         human_audio_timeout: float = 8.0,
-        listen_after_tts_delay_ms: int = 300,
-        min_speech_seconds: float = 0.6,
+        listen_after_tts_delay_ms: int = 80,
+        min_speech_seconds: float = 0.25,
         max_silence_seconds: float = 8.0,
         silence_does_not_end_call: bool = True,
         capture_rms_log_interval_seconds: float = 1.0,
@@ -77,11 +78,6 @@ class ConversationLoop:
         diagnostics_path: Optional[Path] = None,
         capture_factory: Optional[Callable[..., AudioCapture]] = None,
         voicemail_detect_seconds: float = 15.0,
-        use_thinking_fillers: bool = True,
-        filler_probability: float = 0.7,
-        stream_llm_replies: bool = True,
-        voicemail_play_on_greeting: bool = True,
-        voicemail_greeting_frames_required: int = 6,
     ):
         self.capture_device_hint = capture_device_hint
         self.tts = tts
@@ -148,8 +144,9 @@ class ConversationLoop:
         self._last_tts_text = ""
         self._last_tts_duration = 0.0
         self._last_voicemail_classifier_label = ""
+        self._bad_transcript_count = 0
 
-        # Tony echo semantic suppression settings
+        # Agent echo semantic suppression settings
         self._toney_echo_similarity_threshold = 0.86
         self._toney_echo_min_transcript_chars = 12
 
@@ -160,12 +157,6 @@ class ConversationLoop:
         self._voicemail_detect_seconds = max(0.0, float(voicemail_detect_seconds))
         self._voicemail_check_deadline_monotonic = 0.0
         self._voicemail_detected = False
-        self._use_thinking_fillers = use_thinking_fillers
-        self._filler_probability = max(0.0, min(1.0, float(filler_probability)))
-        self._stream_llm_replies = stream_llm_replies
-        self._voicemail_play_on_greeting = voicemail_play_on_greeting
-        self._vm_greeting_frames_required = max(1, int(voicemail_greeting_frames_required))
-        self._vm_greeting_hits = 0
 
 
     # ------------------------------------------------------------------ #
@@ -195,7 +186,6 @@ class ConversationLoop:
         )
         self._voicemail_detected = False
         self._last_voicemail_classifier_label = ""
-        self._vm_greeting_hits = 0
 
         self._next_silence_log = self._last_speech_activity + self._max_silence_seconds
         self._set_state(STATE_WAITING_FOR_ANSWER, "call connected; starting capture before TTS")
@@ -243,10 +233,9 @@ class ConversationLoop:
             if auto_opening and not self._stop_event.is_set():
                 line = opening_line or self.agent.opening_line()
                 if line:
-                    logger.info("[CALL] Tony opening (after answer): %s", line)
-                    if hasattr(self.tts, "prewarm_line"):
-                        self.tts.prewarm_line(line)
-                    self._write_transcript("Tony", line)
+                    speaker = self._agent_display_name()
+                    logger.info("[CALL] %s opening (after answer): %s", speaker, line)
+                    self._write_transcript(speaker, line)
                     self._play_tts_blocking(line, STATE_SPEAKING_OPENING, "opening")
                 else:
                     logger.warning("[CALL] Opening line empty; entering listening mode")
@@ -280,21 +269,6 @@ class ConversationLoop:
     def stop(self) -> None:
         self._response_active.set()
         self._stop_event.set()
-
-    def is_agent_busy(self) -> bool:
-        """True while TTS/LLM/STT work is in progress (ignore transient GV UI gaps)."""
-        busy_states = {
-            STATE_SPEAKING_OPENING,
-            STATE_SPEAKING_REPLY,
-            STATE_THINKING,
-            STATE_TRANSCRIBING,
-        }
-        if self._state in busy_states:
-            return True
-        try:
-            return bool(self.tts.is_speaking())
-        except Exception:
-            return False
 
     def is_stopped(self) -> bool:
         return self._stop_event.is_set()
@@ -348,6 +322,9 @@ class ConversationLoop:
             if event.wait(timeout=min(0.05, remaining)):
                 return True
         return event.is_set()
+
+    def _agent_display_name(self) -> str:
+        return str(getattr(self.agent, "agent_name", "") or "Agent").strip() or "Agent"
 
     # ------------------------------------------------------------------ #
     # State and diagnostics
@@ -441,7 +418,9 @@ class ConversationLoop:
 
     def _normalize_text_for_similarity(self, text: str) -> str:
         # Lowercase, strip punctuation-ish chars, collapse whitespace.
-        t = "".join(ch.lower() if ch.isalnum() or ch.isspace() else " " for ch in (text or ""))
+        normalized = unicodedata.normalize("NFKD", text or "")
+        asciiish = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+        t = "".join(ch.lower() if ch.isalnum() or ch.isspace() else " " for ch in asciiish)
         return " ".join(t.split())
 
     def _is_tony_echo_transcript(self, stt_text: str) -> bool:
@@ -470,6 +449,65 @@ class ConversationLoop:
             tts_norm,
         )
         return ratio >= self._toney_echo_similarity_threshold
+
+    def _is_voicemail_transcript(self, stt_text: str) -> bool:
+        text = self._normalize_text_for_similarity(stt_text)
+        if not text:
+            return False
+        phrases = (
+            "forwarded to voicemail",
+            "forwarded to voice mail",
+            "leave a message",
+            "record your message",
+            "after the tone",
+            "at the tone",
+            "mailbox",
+            "buzon de voz",
+            "buzon voz",
+            "llamada se reenvio",
+            "llamada fue reenviada",
+            "mensaje despues del tono",
+        )
+        if any(phrase in text for phrase in phrases):
+            return True
+        return ("buzon" in text and "voz" in text) or ("buz" in text and "voz" in text) or ("llamada" in text and "voz" in text)
+
+    def _is_unusable_transcript(self, stt_text: str) -> bool:
+        """Filter STT hallucinations/fragments before the sales agent responds."""
+        text = self._normalize_text_for_similarity(stt_text)
+        if not text:
+            return True
+
+        allowed_short = {
+            "yes", "yeah", "yep", "no", "nope", "hello", "hi", "hey",
+            "owner", "manager", "speaking", "busy",
+        }
+        if text in allowed_short:
+            return False
+
+        bad_exact = {
+            "and", "is", "you", "the", "a", "to", "for", "okay", "ok",
+            "busin", "business", "to 4 pm", "8 am to 4 pm", "4 pm",
+        }
+        if text in bad_exact:
+            return True
+
+        bad_phrases = (
+            "i love you",
+            "ski i love you",
+            "thank you for watching",
+            "please subscribe",
+            "music",
+        )
+        if any(phrase in text for phrase in bad_phrases):
+            return True
+
+        words = text.split()
+        if len(words) == 1 and len(text) < 7:
+            return True
+        if len(words) <= 3 and any(fragment in text for fragment in ("8 am", "4 pm", "to 4", "monday through friday")):
+            return True
+        return False
 
     def _write_transcript(self, speaker: str, text: str) -> None:
 
@@ -623,15 +661,15 @@ class ConversationLoop:
             self._log_rms_if_due(now, rms, threshold)
 
             if self.tts.is_speaking():
-                if rms >= max(threshold * 2.0, threshold + 0.01):
+                if rms >= max(threshold * 1.2, threshold + 0.003):
                     logger.info(
-                        "[CAPTURE] Barge-in audio while TTS speaking rms=%.4f threshold=%.4f; stopping Tony",
+                        "[CAPTURE] Barge-in audio while TTS speaking rms=%.4f threshold=%.4f; stopping agent",
                         rms,
                         threshold,
                     )
                     self.tts.stop()
                     self._answer_confirmed.set()
-                    self._capture_suppress_until = time.monotonic() + 0.08
+                    self._capture_suppress_until = time.monotonic() + 0.02
                 self._vad.reset()
                 self._write_diagnostics(vad_detected=False)
                 continue
@@ -676,28 +714,7 @@ class ConversationLoop:
                         self.stop()
                         return
                     if label == "voicemail_greeting":
-                        self._vm_greeting_hits += 1
-                        if (
-                            self._voicemail_play_on_greeting
-                            and self._vm_greeting_hits >= self._vm_greeting_frames_required
-                        ):
-                            self._voicemail_detected = True
-                            logger.info(
-                                "[VM] Voicemail greeting pattern confirmed (%d frames); ending loop",
-                                self._vm_greeting_hits,
-                            )
-                            if self._session is not None and not self._session.is_terminal():
-                                try:
-                                    self._session.outcome = "voicemail"
-                                    self._session.transition(
-                                        CallState.VOICEMAIL,
-                                        "voicemail greeting detected (audio)",
-                                    )
-                                except ValueError:
-                                    pass
-                            self.stop()
-                            return
-                        logger.debug("[VM] Possible voicemail greeting (%d/%d)", self._vm_greeting_hits, self._vm_greeting_frames_required)
+                        logger.debug("[VM] Possible voicemail greeting observed; waiting for beep confirmation")
                 except Exception as exc:
                     logger.debug("[VM] detection frame error: %s", exc)
 
@@ -861,7 +878,7 @@ class ConversationLoop:
             # If carrier spoke while Tony was still speaking, stop TTS immediately
             # so Tony doesn't finish his reply over the carrier's interruption.
             if self.tts.is_speaking():
-                logger.info("[RESPONSE] Barge-in detected: carrier spoke during TTS; stopping Tony")
+                logger.info("[RESPONSE] Barge-in detected: prospect spoke during TTS; stopping agent")
                 self.tts.stop()
                 # Brief wait for audio pipeline to settle
                 time.sleep(0.05)
@@ -873,18 +890,6 @@ class ConversationLoop:
             if self.tts.is_speaking():
                 logger.info("[RESPONSE] segment skipped because TTS is speaking")
                 continue
-
-            import random
-
-            if (
-                self._use_thinking_fillers
-                and random.random() < self._filler_probability
-                and hasattr(self.tts, "play_filler")
-            ):
-                try:
-                    self.tts.play_filler()
-                except Exception as exc:
-                    logger.debug("[RESPONSE] filler skipped: %s", exc)
 
             self._loop_iteration += 1
             duration = len(audio_segment) / float(_SAMPLERATE)
@@ -930,54 +935,71 @@ class ConversationLoop:
                 self._set_state(STATE_LISTENING, "suppressed tony echo")
                 continue
 
+            if self._is_unusable_transcript(transcript):
+                self._bad_transcript_count += 1
+                self._last_empty_stt_reason = "suppressed_low_quality_transcript"
+                self._write_diagnostics(last_empty_stt_reason=self._last_empty_stt_reason)
+                logger.info(
+                    "[STT] Suppressed low-quality transcript=%s count=%d",
+                    transcript,
+                    self._bad_transcript_count,
+                )
+                if self._bad_transcript_count == 1:
+                    clarification = "Sorry, I didn't catch that clearly. Could you repeat that?"
+                    speaker = self._agent_display_name()
+                    logger.info("[RESPONSE] %s clarification: %s", speaker, clarification)
+                    self._write_transcript(speaker, clarification)
+                    self._play_tts_async_like(clarification, STATE_SPEAKING_REPLY, "clarification")
+                else:
+                    self._set_state(STATE_LISTENING, "suppressed low-quality STT")
+                continue
+
             self._last_stt_text = transcript
             self._last_empty_stt_reason = ""
+            self._bad_transcript_count = 0
             logger.info("[STT] response_text=%s", transcript)
 
             self._write_diagnostics(last_stt_text=transcript, last_empty_stt_reason="")
             self._write_transcript("Prospect", transcript)
 
+            if self._is_voicemail_transcript(transcript):
+                logger.info("[VM] voicemail prompt detected from STT transcript; switching to voicemail handling")
+                if self._session is not None and not self._session.is_terminal():
+                    try:
+                        self._session.outcome = "voicemail"
+                        self._session.transition(CallState.VOICEMAIL, "voicemail prompt detected by STT")
+                    except ValueError:
+                        pass
+                self.stop()
+                break
+
             self._set_state(STATE_THINKING, "generating LLM reply")
-            if self._stream_llm_replies and hasattr(self.agent, "respond_to_streaming"):
-                spoken_parts: list[str] = []
-
-                def _on_clause(clause: str) -> None:
-                    if not clause.strip():
-                        return
-                    spoken_parts.append(clause)
-                    self._write_transcript("Tony", clause)
-                    self._last_tts_text = " ".join(spoken_parts)
-                    # Same TTS path for every sentence — avoids mixed neural + SAPI voices.
-                    self._play_tts_blocking(clause, STATE_SPEAKING_REPLY, "reply")
-
-                response = self.agent.respond_to_streaming(transcript, _on_clause)
-            else:
-                response = self.agent.respond_to(transcript)
-                if not response:
-                    logger.info("[RESPONSE] Empty LLM response; returning to listening")
-                    self._set_state(STATE_LISTENING, "empty LLM response")
-                    continue
-                logger.info("[RESPONSE] Tony: %s", response)
-                self._write_transcript("Tony", response)
-                self._last_tts_text = response
-                self._play_tts_async_like(response, STATE_SPEAKING_REPLY, "reply")
-
+            response = self.agent.respond_to(transcript)
             if not response:
                 logger.info("[RESPONSE] Empty LLM response; returning to listening")
                 self._set_state(STATE_LISTENING, "empty LLM response")
                 continue
 
-            logger.info("[RESPONSE] Tony (full): %s", response)
-            if self._stream_llm_replies and hasattr(self.agent, "respond_to_streaming"):
-                self._last_tts_text = response
+            if self._defer_reply_if_prospect_is_talking():
+                self._set_state(STATE_LISTENING, "deferred stale reply for newer prospect speech")
+                continue
+
+            speaker = self._agent_display_name()
+            logger.info("[RESPONSE] %s: %s", speaker, response)
+            self._write_transcript(speaker, response)
+            # Reply path: prefer speak_async so unit tests can assert it.
+            # Store last TTS for self-talk suppression.
+            self._last_tts_text = response
+            self._play_tts_async_like(response, STATE_SPEAKING_REPLY, "reply")
 
 
             if self.agent.should_end_call():
                 logger.info("[RESPONSE] Agent requested graceful call end")
                 goodbye = self.agent.goodbye_line()
                 if goodbye:
-                    logger.info("[RESPONSE] Tony goodbye: %s", goodbye)
-                    self._write_transcript("Tony", goodbye)
+                    speaker = self._agent_display_name()
+                    logger.info("[RESPONSE] %s goodbye: %s", speaker, goodbye)
+                    self._write_transcript(speaker, goodbye)
                     self._play_tts_blocking(goodbye, STATE_SPEAKING_REPLY, "goodbye")
                 if self._session and not self._session.is_terminal():
                     try:
@@ -985,6 +1007,23 @@ class ConversationLoop:
                     except ValueError:
                         pass
                 self.stop()
+
+    def _defer_reply_if_prospect_is_talking(self) -> bool:
+        """Avoid speaking over a caller who continued talking while LLM was thinking."""
+        if not self._speech_q.empty():
+            logger.info("[RESPONSE] Newer prospect speech is queued; skipping stale reply")
+            return True
+        if not self._vad.is_in_speech:
+            return False
+
+        deadline = time.monotonic() + 1.5
+        logger.info("[RESPONSE] Prospect still talking while reply is ready; waiting before TTS")
+        while time.monotonic() < deadline and self._vad.is_in_speech and not self._stop_event.is_set():
+            time.sleep(0.03)
+        if not self._speech_q.empty():
+            logger.info("[RESPONSE] Prospect speech arrived after wait; skipping stale reply")
+            return True
+        return self._vad.is_in_speech
 
     def _play_tts_async_like(self, text: str, state: str, label: str) -> None:
         """Play TTS while preferring speak_async (used by unit tests)."""
@@ -1041,7 +1080,7 @@ class ConversationLoop:
         if self._listen_after_tts_delay_s > 0:
             self._capture_suppress_until = time.monotonic() + self._listen_after_tts_delay_s
             logger.info(
-                "[TTS] suppressing Tony echo for %.0fms after %s",
+                "[TTS] suppressing agent echo for %.0fms after %s",
                 self._listen_after_tts_delay_s * 1000.0,
                 label,
             )

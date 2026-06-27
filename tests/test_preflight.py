@@ -21,9 +21,6 @@ def test_check_env_missing_key(tmp_path, monkeypatch):
     env_file.write_text("GROQ_API_KEY=your_key_here\n")
     monkeypatch.setattr("src.preflight.BASE_DIR", tmp_path)
     monkeypatch.setenv("GROQ_API_KEY", "your_key_here")
-    for i in range(2, 11):
-        monkeypatch.delenv(f"GROQ_API_KEY_{i}", raising=False)
-    monkeypatch.delenv("GROQ_API_KEYS", raising=False)
     from src.preflight import check_env
     r = check_env()
     assert r.status == "fail"
@@ -43,20 +40,13 @@ def test_check_env_ok(tmp_path, monkeypatch):
 
 def test_check_groq_no_key(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
-    for i in range(2, 11):
-        monkeypatch.delenv(f"GROQ_API_KEY_{i}", raising=False)
-    monkeypatch.delenv("GROQ_API_KEYS", raising=False)
     from src.preflight import check_groq_api
     r = check_groq_api(api_key="")
     assert r.status == "fail"
     assert "not set" in r.message.lower() or "GROQ_API_KEY" in r.message
 
 
-def test_check_groq_placeholder(monkeypatch):
-    for name in ("GROQ_API_KEY", "GROQ_API_KEYS"):
-        monkeypatch.delenv(name, raising=False)
-    for i in range(2, 11):
-        monkeypatch.delenv(f"GROQ_API_KEY_{i}", raising=False)
+def test_check_groq_placeholder():
     from src.preflight import check_groq_api
     r = check_groq_api(api_key="your_groq_api_key_here")
     assert r.status == "fail"
@@ -66,9 +56,9 @@ def test_check_groq_connection_error():
     from src.preflight import check_groq_api
     with patch("src.preflight.check_groq_api.__wrapped__" if hasattr(check_groq_api, "__wrapped__") else "builtins.open"):
         # Simulate Groq client raising
-            with patch("src.groq_pool.Groq") as MockGroq:
-                MockGroq.return_value.models.list.side_effect = Exception("Connection refused")
-                r = check_groq_api(api_key="gsk_test_key_that_is_real")
+        with patch("groq.Groq") as MockGroq:
+            MockGroq.return_value.models.list.side_effect = Exception("Connection refused")
+            r = check_groq_api(api_key="gsk_test_key_that_is_real")
             assert r.status == "fail"
             assert "Connection" in r.message or "failed" in r.message.lower()
 
@@ -77,11 +67,11 @@ def test_check_groq_ok():
     from src.preflight import check_groq_api
     mock_models = MagicMock()
     mock_models.data = [MagicMock(), MagicMock(), MagicMock()]
-    with patch("src.groq_pool.Groq") as MockGroq:
+    with patch("groq.Groq") as MockGroq:
         MockGroq.return_value.models.list.return_value = mock_models
         r = check_groq_api(api_key="gsk_valid_key")
         assert r.status == "ok"
-        assert "3" in r.message or "OK" in r.message
+        assert "3" in r.message
 
 
 # ── check_contacts ───────────────────────────────────────────────────────────

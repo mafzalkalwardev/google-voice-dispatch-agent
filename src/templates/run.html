@@ -1,18 +1,14 @@
 {% extends "base.html" %}
 {% set active_page = "run" %}
 
-{% block title %}Live Run — INDUS TRANSPORTS LLC{% endblock %}
+{% block title %}Live Run — FT Solutions{% endblock %}
 
 {% block content %}
 <div class="page-header">
   <div class="page-header-left">
     <h2 class="page-title">Live Run Console</h2>
-    <p class="page-sub">Start, monitor, and stop the dispatch agent</p>
+    <p class="page-sub">Start, monitor, and stop the FT Solutions calling agent</p>
   </div>
-</div>
-
-<div class="batch-progress-banner" id="batchProgressBanner">
-  Batch progress: loading…
 </div>
 
 <!-- Compliance warning -->
@@ -23,7 +19,7 @@
     You are responsible for complying with TCPA, FDCPA, DNC Registry rules, state call-recording laws,
     Google Voice Terms of Service, and all other applicable regulations before dialing.
     Do not call numbers on federal or state Do-Not-Call lists without express written consent.
-    Obtain required consent for recording. Indus Transports LLC does not guarantee legal compliance
+    Obtain required consent for recording. FT Solutions calling automation does not guarantee legal compliance
     on your behalf. By starting a run, you accept full legal responsibility.
   </div>
 </div>
@@ -96,7 +92,7 @@
         </div>
         <div class="form-group">
           <label>Contact / Company Name</label>
-          <input type="text" id="singleName" placeholder="Test Carrier" />
+          <input type="text" id="singleName" placeholder="Test Business" />
         </div>
         <div class="form-group">
           <label>Mode</label>
@@ -428,24 +424,8 @@ function clearLog() {
   logIndex = 0;
 }
 
-async function refreshBatchProgress() {
-  try {
-    const r = await fetch('/api/batch-progress');
-    const data = await r.json();
-    const el = document.getElementById('batchProgressBanner');
-    if (!el) return;
-    el.textContent =
-      `Batch resume: ${data.completed_count} number(s) already completed for this contacts file. ` +
-      `Re-runs skip them automatically (use CLI --reset-batch-progress to dial all again).`;
-  } catch (e) {
-    const el = document.getElementById('batchProgressBanner');
-    if (el) el.textContent = 'Batch progress unavailable.';
-  }
-}
-
 // On page load: sync UI with current status
 (async () => {
-  refreshBatchProgress();
   const r = await fetch('/api/run/status');
   const state = await r.json();
   updateStatusPill(state.status);

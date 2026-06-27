@@ -1,28 +1,34 @@
 {% extends "base.html" %}
 {% set active_page = "contacts" %}
 
-{% block title %}Contacts — INDUS TRANSPORTS LLC{% endblock %}
+{% block title %}Contacts — FT Solutions{% endblock %}
 
 {% block content %}
 <div class="page-header">
   <div class="page-header-left">
     <h2 class="page-title">Contacts</h2>
-    <p class="page-sub">Browse your full list — the dialer learns from every call and skips bad numbers automatically</p>
+    <p class="page-sub">Upload a CSV or XLSX contact list</p>
   </div>
 </div>
 
-<div class="panel" style="max-width:900px">
+<div class="panel" style="max-width:700px">
   <div class="panel-header">
     <h3 class="panel-title">Upload Contacts</h3>
   </div>
+
   <p class="panel-desc">
     Required columns: <code>Phone</code> (or Mobile/Number) and <code>Name</code> (or Company/Legal Name).
-    Accepted: <code>.csv</code>, <code>.xlsx</code>, <code>.xls</code>.
+    Accepted formats: <code>.csv</code>, <code>.xlsx</code>, <code>.xls</code>.
   </p>
+
   <div class="upload-zone" id="uploadZone"
        ondragover="event.preventDefault();this.classList.add('upload-zone--over')"
        ondragleave="this.classList.remove('upload-zone--over')"
        ondrop="handleDrop(event)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="40" height="40" style="margin-bottom:.5rem;color:var(--blue)">
+      <polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/>
+      <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3"/>
+    </svg>
     <div>Drag &amp; drop a file here, or</div>
     <label class="btn btn-secondary" style="margin-top:.5rem;cursor:pointer">
       Choose File
@@ -30,10 +36,12 @@
     </label>
     <div class="field-hint" style="margin-top:.5rem" id="uploadStatus"></div>
   </div>
+
   <div id="uploadResult" style="margin-top:1rem"></div>
 </div>
 
-<div class="panel" style="margin-top:1.5rem">
+<!-- Current file info -->
+<div class="panel" style="max-width:700px;margin-top:1.5rem">
   <div class="panel-header">
     <h3 class="panel-title">Current Contacts File</h3>
   </div>
@@ -41,110 +49,28 @@
     <span class="field-info-label">Path:</span>
     <code>{{ contacts_file or "(not configured)" }}</code>
   </div>
-  <div class="field-hint" style="margin-top:.35rem">Console build: <code>{{ web_build or 'unknown' }}</code></div>
-
   {% if preview.error %}
   <div class="alert alert-error" style="margin-top:1rem">{{ preview.error }}</div>
   {% elif preview.total > 0 %}
-  <div class="batch-progress-banner" style="margin-top:1rem">
-    <strong>Call intelligence</strong> is {% if use_call_intelligence %}<span class="text-success">ON</span>{% else %}<span class="text-danger">OFF</span>{% endif %}
-    — after each call the agent remembers outcomes, avoids DNC/wrong numbers, and improves openings.
-    {% if preview.intelligence %}
-    <br><span class="text-sm text-muted">
-      Memory: {{ preview.intelligence.numbers_with_memory }} numbers tracked ·
-      {{ preview.intelligence.blocked_or_dnc }} blocked/DNC ·
-      {{ preview.intelligence.ever_connected }} ever connected live
-    </span>
-    {% endif %}
-  </div>
-
-  <form method="get" action="/contacts" class="filter-bar" style="margin-top:1rem" id="contactsFilterForm">
-    <input type="text" name="q" id="contactSearch" class="filter-search-input"
-           placeholder="Search name or phone…" value="{{ query or '' }}" />
-    <select name="per_page" id="perPageSelect" class="leads-filter-select">
-      <option value="25" {% if per_page == 25 %}selected{% endif %}>25 / page</option>
-      <option value="50" {% if per_page == 50 or not per_page %}selected{% endif %}>50 / page</option>
-      <option value="100" {% if per_page == 100 %}selected{% endif %}>100 / page</option>
-    </select>
-    <label class="text-sm" style="display:flex;align-items:center;gap:.35rem">
-      <input type="checkbox" name="hide_blocked" value="1" id="hideBlocked"
-             {% if hide_blocked %}checked{% endif %} />
-      Hide blocked / DNC
-    </label>
-    <button type="submit" class="btn btn-secondary btn-sm">Apply</button>
-  </form>
-
-  {% if list_error %}
-  <div class="alert alert-error" style="margin-top:1rem">{{ list_error }}</div>
-  {% elif list_data and list_data.ok %}
   <div class="alert alert-success" style="margin-top:1rem">
-    <strong>{{ list_data.total | int }}</strong> contacts
-    {% if query %} matching “{{ query }}”{% endif %}
-    · showing {{ list_data.start }}–{{ list_data.end }}
-    {% if list_data.intelligence %}
-    · <span class="text-muted">{{ list_data.intelligence.blocked_or_dnc }} blocked/DNC in memory</span>
-    {% endif %}
+    {{ preview.total }} contacts loaded{% if preview.total > 15 %} — showing first 15{% endif %}
   </div>
-
-  <div class="crm-table-wrap" style="margin-top:1rem">
-    <table class="data-table" id="contactsTable">
-      <thead>
+  <div class="table-wrap" style="margin-top:1rem">
+    <table class="data-table">
+      <thead><tr><th>#</th><th>Name</th><th>Phone</th></tr></thead>
+      <tbody>
+        {% for c in preview.rows %}
         <tr>
-          <th>#</th>
-          <th>Name</th>
-          <th>Phone</th>
-          <th>Intelligence</th>
-          <th>Last outcome</th>
-          <th>Interest</th>
+          <td class="td-mono">{{ loop.index }}</td>
+          <td>{{ c.name }}</td>
+          <td class="td-mono">{{ c.phone }}</td>
         </tr>
-      </thead>
-      <tbody id="contactsTbody">
-        {% for row in list_data.rows %}
-        <tr>
-          <td class="td-mono">{{ list_data.start + loop.index0 }}</td>
-          <td>{{ row.name }}</td>
-          <td class="td-mono">{{ row.phone }}</td>
-          <td>
-            {% if row.intel_status == 'blocked' or row.intel_status == 'dnc' %}
-            <span class="urgency-pill urgency-pill--high" title="{{ row.skip_reason }}">{{ row.intel_label }}</span>
-            {% elif row.intel_status == 'warn' %}
-            <span class="urgency-pill urgency-pill--med" title="{{ row.skip_reason }}">{{ row.intel_label }}</span>
-            {% elif row.intel_status == 'ok' %}
-            <span class="truck-pill">{{ row.intel_label }}</span>
-            {% else %}
-            <span class="truck-pill">{{ row.intel_label or 'New' }}</span>
-            {% endif %}
-          </td>
-          <td>{{ row.last_outcome or '—' }}</td>
-          <td>{{ row.interested or '—' }}</td>
-        </tr>
-        {% else %}
-        <tr><td colspan="6" class="text-muted">No rows on this page.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
-
-  <div class="contacts-pager">
-    {% set prev_page = list_data.page - 1 %}
-    {% set next_page = list_data.page + 1 %}
-    {% if list_data.page > 1 %}
-    <a class="btn btn-secondary btn-sm" href="/contacts?page={{ prev_page }}&per_page={{ per_page }}&q={{ query | urlencode }}{% if hide_blocked %}&hide_blocked=1{% endif %}">← Previous</a>
-    {% else %}
-    <span class="btn btn-secondary btn-sm" style="opacity:.45;pointer-events:none">← Previous</span>
-    {% endif %}
-    <span class="contacts-pager-info">Page {{ list_data.page }} of {{ list_data.pages }}</span>
-    {% if list_data.page < list_data.pages %}
-    <a class="btn btn-secondary btn-sm" href="/contacts?page={{ next_page }}&per_page={{ per_page }}&q={{ query | urlencode }}{% if hide_blocked %}&hide_blocked=1{% endif %}">Next →</a>
-    {% else %}
-    <span class="btn btn-secondary btn-sm" style="opacity:.45;pointer-events:none">Next →</span>
-    {% endif %}
-  </div>
   {% else %}
-  <div class="alert alert-error" style="margin-top:1rem">Could not load contact list. Restart the web app: <code>python -m src.web_app</code></div>
-  {% endif %}
-  {% else %}
-  <div class="empty-state" style="margin-top:1rem">No contacts loaded. Upload a file above.</div>
+  <div class="empty-state">No contacts loaded. Upload a file above.</div>
   {% endif %}
 </div>
 {% endblock %}
@@ -164,6 +90,7 @@ async function uploadFile(file) {
   const resultEl = document.getElementById('uploadResult');
   statusEl.textContent = 'Uploading…';
   resultEl.innerHTML = '';
+
   const formData = new FormData();
   formData.append('file', file);
   try {
@@ -173,12 +100,14 @@ async function uploadFile(file) {
       statusEl.textContent = '';
       resultEl.innerHTML = `<div class="alert alert-success">
         ✓ Uploaded <strong>${file.name}</strong> — ${data.count} contacts.
-        <a href="/contacts">Reload page</a> to browse.
+        <a href="/contacts">Reload page</a> to see preview.
       </div>`;
     } else {
+      statusEl.textContent = '';
       resultEl.innerHTML = `<div class="alert alert-error">Upload failed: ${data.error}</div>`;
     }
   } catch (err) {
+    statusEl.textContent = '';
     resultEl.innerHTML = `<div class="alert alert-error">Error: ${err.message}</div>`;
   }
 }

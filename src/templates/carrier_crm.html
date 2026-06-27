@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% set active_page = "carrier_crm" %}
+{% set active_page = "crm" %}
 
-{% block title %}Carrier CRM - INDUS TRANSPORTS LLC{% endblock %}
+{% block title %}CRM - FT Solutions{% endblock %}
 
 {% block content %}
 <div class="page-header">
   <div class="page-header-left">
-    <h2 class="page-title">Carrier CRM</h2>
-    <p class="page-sub">Merged carrier profiles indexed by phone, MC number, and email.</p>
+    <h2 class="page-title">CRM</h2>
+    <p class="page-sub">Merged CRM Profiles indexed by phone, Account ID, and email.</p>
   </div>
   <div class="quick-actions">
     <a href="/api/carrier-crm/export" class="btn btn-secondary btn-sm">Export CSV</a>
@@ -28,11 +28,11 @@
 
 <div class="panel">
   <div class="panel-header">
-    <h3 class="panel-title">Carrier Profiles</h3>
+    <h3 class="panel-title">CRM Profiles</h3>
     <div style="display:flex;gap:.5rem;align-items:center;flex-wrap:wrap">
-      <input id="crmSearch" class="log-filter-input" type="text" placeholder="Search company, carrier, phone, MC, email..." oninput="filterCrm()" />
+      <input id="crmSearch" class="log-filter-input" type="text" placeholder="Search company, contact, phone, MC, email..." oninput="filterCrm()" />
       <select id="crmTruckFilter" class="leads-filter-select" onchange="filterCrm()">
-        <option value="">All Equipment</option>
+        <option value="">All Segments</option>
         {% for truck in truck_types %}
         <option value="{{ truck }}">{{ truck }}</option>
         {% endfor %}
@@ -40,16 +40,16 @@
     </div>
   </div>
   {% if profiles %}
-  <div class="table-wrap crm-table-wrap">
+  <div class="table-wrap">
     <table class="data-table" id="crmTable">
       <thead>
         <tr>
-          <th>Carrier</th>
+          <th>Contact</th>
           <th>Phone</th>
-          <th>MC/DOT</th>
+          <th>ID</th>
           <th>Email</th>
-          <th>Equipment</th>
-          <th>Lanes</th>
+          <th>Segment</th>
+          <th>Region</th>
           <th>Percent</th>
           <th>Pipeline</th>
           <th>Calls</th>
@@ -61,7 +61,7 @@
         {% for profile in profiles %}
         <tr data-truck="{{ profile.truck_type }}" data-search="{{ (profile.company_name ~ ' ' ~ profile.carrier_name ~ ' ' ~ profile.name ~ ' ' ~ profile.phone ~ ' ' ~ profile.mc_number ~ ' ' ~ profile.dot_number ~ ' ' ~ profile.email ~ ' ' ~ profile.preferred_lanes ~ ' ' ~ profile.post_call_summary) | lower }}">
           <td>
-            <a href="/carrier-crm/{{ profile.id or profile.phone }}"><strong>{{ profile.company_name or profile.carrier_name or profile.name or '-' }}</strong></a><br>
+            <a href="/crm/{{ profile.id or profile.phone }}"><strong>{{ profile.company_name or profile.carrier_name or profile.name or '-' }}</strong></a><br>
             <span class="text-muted">{{ profile.carrier_name or profile.name or '-' }}</span>
           </td>
           <td class="td-mono">{{ profile.phone or '-' }}</td>
@@ -82,7 +82,7 @@
   {% else %}
   <div class="empty-state">
     <span class="empty-state-icon">&#128188;</span>
-    No carrier profiles yet. Connected conversations and extracted leads create CRM profiles automatically.
+    No CRM Profiles yet. Connected conversations and extracted leads create CRM profiles automatically.
   </div>
   {% endif %}
 </div>

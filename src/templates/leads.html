@@ -1,13 +1,13 @@
 {% extends "base.html" %}
 {% set active_page = "leads" %}
 
-{% block title %}Leads — INDUS TRANSPORTS LLC{% endblock %}
+{% block title %}Leads — FT Solutions{% endblock %}
 
 {% block content %}
 <div class="page-header">
   <div class="page-header-left">
     <h2 class="page-title">Leads</h2>
-    <p class="page-sub">Carrier leads extracted from call transcripts &mdash; {{ leads | length }} total</p>
+    <p class="page-sub">Contact leads extracted from call transcripts &mdash; {{ leads | length }} total</p>
   </div>
   <div class="quick-actions">
     <a href="/api/leads/export" class="btn btn-secondary btn-sm">&#8595; Export CSV</a>
@@ -77,13 +77,13 @@
           <th>Company</th>
           <th>Contact</th>
           <th>Phone</th>
-          <th>MC #</th>
+          <th>ID #</th>
           <th>Email</th>
-          <th>Truck Type</th>
-          <th>Dimensions</th>
-          <th>Accessories</th>
-          <th>Lanes</th>
-          <th>Factoring</th>
+          <th>Service Type</th>
+          <th>Scope</th>
+          <th>Services</th>
+          <th>Region</th>
+          <th>Billing</th>
           <th>%</th>
           <th>Interested</th>
           <th>Callback</th>
@@ -97,11 +97,11 @@
       </thead>
       <tbody id="leadsTbody">
         {% for row in leads %}
-        <tr data-search="{{ (row.company_name ~ ' ' ~ row.contact_name ~ ' ' ~ row.phone_number ~ ' ' ~ row.interested ~ ' ' ~ row.call_outcome ~ ' ' ~ row.mc_number ~ ' ' ~ row.truck_type ~ ' ' ~ row.preferred_lanes ~ ' ' ~ row.factoring_company ~ ' ' ~ row.post_call_summary) | lower }}"
+        <tr data-search="{{ (row.company_name ~ ' ' ~ row.carrier_name ~ ' ' ~ row.phone_number ~ ' ' ~ row.interested ~ ' ' ~ row.call_outcome ~ ' ' ~ row.mc_number ~ ' ' ~ row.truck_type ~ ' ' ~ row.preferred_lanes ~ ' ' ~ row.factoring_company ~ ' ' ~ row.post_call_summary) | lower }}"
             data-interest="{{ row.interested }}">
           <td class="td-mono td-nowrap">{{ row.timestamp }}</td>
           <td class="td-name">{{ row.company_name or '—' }}</td>
-          <td>{{ row.contact_name or '—' }}</td>
+          <td>{{ row.carrier_name or '—' }}</td>
           <td class="td-mono">{{ row.phone_number or '—' }}</td>
           <td class="td-mono">{{ row.mc_number or '—' }}</td>
           <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ row.email }}">{{ row.email or '—' }}</td>
@@ -147,70 +147,69 @@
 
 <!-- Add / Edit Modal -->
 <div class="modal-backdrop" id="leadModal" style="display:none" onclick="if(event.target===this)closeModal()">
-  <div class="modal modal--wide modal--lead-form">
+  <div class="modal modal--wide">
     <h3 class="modal-title" id="modalTitle">Add Lead</h3>
     <form id="leadForm" onsubmit="submitLead(event)">
-      <div class="lead-modal-body">
       <div class="form-grid">
         <div class="form-group">
           <label>Contact Name</label>
-          <input type="text" name="contact_name" placeholder="John Smith" />
+          <input type="text" name="carrier_name" placeholder="John Smith" />
         </div>
         <div class="form-group">
           <label>Company Name</label>
-          <input type="text" name="company_name" placeholder="ABC Trucking LLC" />
+          <input type="text" name="company_name" placeholder="ABC Business LLC" />
         </div>
         <div class="form-group">
           <label>Phone Number</label>
           <input type="tel" name="phone_number" placeholder="+17775551234" />
         </div>
         <div class="form-group">
-          <label>MC Number</label>
-          <input type="text" name="mc_number" placeholder="MC-123456" />
+          <label>Account ID</label>
+          <input type="text" name="mc_number" placeholder="ID-123456" />
         </div>
         <div class="form-group">
           <label>Email</label>
           <input type="email" name="email" placeholder="john@example.com" />
         </div>
         <div class="form-group">
-          <label>Truck Type</label>
-          <input type="text" name="truck_type" placeholder="Dry Van / Flatbed / Reefer" />
+          <label>Service Type</label>
+          <input type="text" name="truck_type" placeholder="Internet / Phone / Fiber" />
         </div>
         <div class="form-group">
-          <label>Truck Length</label>
-          <input type="text" name="truck_length" placeholder="53ft" />
+          <label>Service Scope</label>
+          <input type="text" name="truck_length" placeholder="Multi-location / single site" />
         </div>
         <div class="form-group">
-          <label>Dimensions</label>
-          <input type="text" name="dimensions" placeholder="53ft / 26ft / 12x6x6" />
+          <label>Scope</label>
+          <input type="text" name="dimensions" placeholder="Bandwidth / lines / locations" />
         </div>
         <div class="form-group">
-          <label>Accessories</label>
-          <input type="text" name="accessories" placeholder="Tarps, chains, liftgate" />
+          <label>Services</label>
+          <input type="text" name="accessories" placeholder="Fiber, phone, backup, managed Wi-Fi" />
         </div>
         <div class="form-group">
-          <label>Preferred Lanes</label>
+          <label>Preferred Region</label>
           <input type="text" name="preferred_lanes" placeholder="Chicago → Dallas" />
         </div>
         <div class="form-group">
-          <label>Local / OTR</label>
+          <label>Market</label>
           <input type="text" name="local_or_otr" placeholder="Local / Regional / OTR" />
         </div>
         <div class="form-group">
-          <label>Dispatcher Status</label>
-          <input type="text" name="dispatcher_status" placeholder="Self-dispatched / Has dispatcher" />
+          <label>Agent Status</label>
+          <input type="text" name="dispatcher_status" placeholder="New inquiry / Existing customer" />
         </div>
         <div class="form-group">
-          <label>Factoring Company</label>
-          <input type="text" name="factoring_company" placeholder="OTR Capital / RTS / Quick pay" />
+          <label>Billing Company</label>
+          <input type="text" name="factoring_company" placeholder="Monthly / annual / bundled" />
         </div>
         <div class="form-group">
-          <label>Agreed %</label>
-          <input type="text" name="agreed_percentage" placeholder="8%" />
+          <label>Plan Value</label>
+          <input type="text" name="agreed_percentage" placeholder="$250/mo" />
         </div>
         <div class="form-group">
           <label>Pricing Discussion</label>
-          <input type="text" name="pricing_discussion" placeholder="Asked for 8%, Tony countered 9%" />
+          <input type="text" name="pricing_discussion" placeholder="Discussed package and appointment window" />
         </div>
         <div class="form-group">
           <label>Interested</label>
@@ -244,7 +243,7 @@
         </div>
         <div class="form-group form-group--wide">
           <label>Objections</label>
-          <textarea name="objections" rows="2" placeholder="Price concern, already has dispatcher"></textarea>
+          <textarea name="objections" rows="2" placeholder="Price concern, already has Agent"></textarea>
         </div>
         <div class="form-group form-group--wide">
           <label>Follow-up Notes</label>
@@ -255,8 +254,7 @@
           <textarea name="best_follow_up_strategy" rows="2" placeholder="Lead with strongest lane and pricing discussion"></textarea>
         </div>
       </div>
-      </div>
-      <div class="form-actions lead-modal-actions">
+      <div class="form-actions">
         <button type="submit" class="btn btn-primary">Save Lead</button>
         <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
         <span class="form-actions-hint" id="modalMsg"></span>
@@ -301,7 +299,7 @@ function openEditModal(idx) {
   const form = document.getElementById('leadForm');
   form.reset();
   form.dataset.editPhone = lead.phone_number || '';
-  ['contact_name','company_name','phone_number','mc_number','email',
+  ['carrier_name','company_name','phone_number','mc_number','email',
    'truck_type','truck_length','dimensions','accessories','preferred_lanes',
    'local_or_otr','dispatcher_status','factoring_company','pricing_discussion',
    'agreed_percentage','interested','callback_time','close_probability','urgency',

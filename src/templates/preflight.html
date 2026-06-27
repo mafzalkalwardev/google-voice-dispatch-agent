@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% set active_page = "preflight" %}
 
-{% block title %}Preflight — INDUS TRANSPORTS LLC{% endblock %}
+{% block title %}Preflight — FT Solutions{% endblock %}
 
 {% block content %}
 <div class="page-header">
@@ -27,8 +27,8 @@
     <h3 class="panel-title">What Each Check Validates</h3>
   </div>
   <ul class="check-desc-list">
-    <li><strong>ENV File</strong> — <code>.env</code> exists; at least one valid <code>GROQ_API_KEY</code> (supports <code>GROQ_API_KEY_2</code>, <code>GROQ_API_KEY_3</code>, or <code>GROQ_API_KEYS</code>).</li>
-    <li><strong>Groq API</strong> — Tests each configured key; enables multi-account failover when 2+ keys are set.</li>
+    <li><strong>ENV File</strong> — <code>.env</code> exists and <code>GROQ_API_KEY</code> is set (not placeholder).</li>
+    <li><strong>Groq API</strong> — Live HTTP call to Groq; confirms key is valid and returns model list.</li>
     <li><strong>Contacts File</strong> — Configured contacts path exists and can be parsed by <code>load_contacts()</code>.</li>
     <li><strong>Chrome Profile</strong> — <code>chrome_profiles/&lt;name&gt;</code> directory exists (created on first launch if missing).</li>
     <li><strong>Audio Loopback</strong> — <code>LOOPBACK_DEVICE</code> name is found in sounddevice output device list. Requires VB-CABLE.</li>

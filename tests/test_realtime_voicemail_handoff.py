@@ -65,4 +65,4 @@ def test_realtime_voicemail_detection_plays_voicemail_audio():
     assert play_audio.call_args.args[:3] == (voicemail_path, "CABLE Input", True)
     browser.hangup_call.assert_called_once()
     assert session.state == CallState.ENDED
-    assert any("voicemail" in n.lower() for n in session.notes)
+    assert "hung up after realtime voicemail playback" in session.notes

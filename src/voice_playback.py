@@ -199,6 +199,7 @@ def _stream_audio_to_device(
     samplerate: int,
     device_index: int,
     block: bool = True,
+    stop_event: Optional[threading.Event] = None,
 ) -> None:
     """Write numpy-compatible audio to an explicit sounddevice OutputStream."""
     import sounddevice as sd
@@ -224,7 +225,16 @@ def _stream_audio_to_device(
             channels=channels,
             dtype="float32",
         ) as stream:
-            stream.write(data)
+            chunk_size = max(1, int(target_rate * 0.05))
+            for start in range(0, len(data), chunk_size):
+                if stop_event is not None and stop_event.is_set():
+                    logger.info("TTS playback interrupted: device=[%d]", device_index)
+                    try:
+                        stream.abort()
+                    except Exception:
+                        pass
+                    break
+                stream.write(data[start:start + chunk_size])
         logger.info(
             "TTS playback finished: device=[%d] duration=%.2fs",
             device_index,

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% set active_page = "dashboard" %}
 
-{% block title %}Dashboard — INDUS TRANSPORTS LLC{% endblock %}
+{% block title %}Dashboard — FT Solutions{% endblock %}
 
 {% block content %}
 <div class="page-header">
@@ -26,7 +26,7 @@
     </div>
     <div class="stat-body">
       <div class="stat-label">Total Calls</div>
-      <div class="stat-value" id="dashTotalCalls">{{ log_stats.total }}</div>
+      <div class="stat-value">{{ recent_logs | length }}</div>
     </div>
   </div>
 
@@ -38,7 +38,7 @@
     </div>
     <div class="stat-body">
       <div class="stat-label">Connected</div>
-      <div class="stat-value" id="dashConnected">{{ log_stats.connected }}</div>
+      <div class="stat-value">{{ recent_logs | selectattr("status", "equalto", "CONNECTED") | list | length }}</div>
     </div>
   </div>
 
@@ -50,7 +50,7 @@
     </div>
     <div class="stat-body">
       <div class="stat-label">Voicemail</div>
-      <div class="stat-value" id="dashVoicemail">{{ log_stats.voicemail }}</div>
+      <div class="stat-value">{{ recent_logs | selectattr("status", "equalto", "VOICEMAIL") | list | length }}</div>
     </div>
   </div>
 
@@ -72,12 +72,11 @@
 <div class="panel">
   <div class="panel-header">
     <h3 class="panel-title">Recent Calls</h3>
-    <button type="button" class="btn btn-secondary btn-sm" onclick="refreshDashboard()">Refresh</button>
     <a href="/logs" class="link-muted">View all →</a>
   </div>
   {% if recent_logs %}
   <div class="table-wrap">
-    <table class="data-table" id="dashRecentTable">
+    <table class="data-table">
       <thead>
         <tr>
           <th>Timestamp</th>
@@ -87,14 +86,14 @@
           <th>Duration</th>
         </tr>
       </thead>
-      <tbody id="dashRecentBody">
+      <tbody>
         {% for row in recent_logs %}
         <tr>
           <td class="td-mono">{{ row.timestamp }}</td>
           <td>{{ row.name }}</td>
           <td class="td-mono">{{ row.phone }}</td>
           <td><span class="badge badge--{{ row.status | lower }}">{{ row.status }}</span></td>
-          <td class="td-mono">{% if row.connected_duration_s %}{{ "%.1fs" | format(row.connected_duration_s | float) }}{% elif row.total_duration_s %}{{ "%.1fs" | format(row.total_duration_s | float) }}{% else %}—{% endif %}</td>
+          <td class="td-mono">{{ "%.1fs" | format(row.connected_duration_s | float) if row.connected_duration_s else "—" }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -104,48 +103,4 @@
   <div class="empty-state">No call logs yet. <a href="/run">Start a run</a> to see results here.</div>
   {% endif %}
 </div>
-{% endblock %}
-
-{% block scripts %}
-<script>
-async function refreshDashboard() {
-  try {
-    const r = await fetch('/api/dashboard/stats');
-    const data = await r.json();
-    const stats = data.logs || {};
-    const el = (id) => document.getElementById(id);
-    if (el('dashTotalCalls')) el('dashTotalCalls').textContent = stats.total ?? 0;
-    if (el('dashConnected')) el('dashConnected').textContent = stats.connected ?? 0;
-    if (el('dashVoicemail')) el('dashVoicemail').textContent = stats.voicemail ?? 0;
-    const tbody = el('dashRecentBody');
-    if (tbody && Array.isArray(data.recent)) {
-      tbody.innerHTML = data.recent.map(row => {
-        const dur = row.connected_duration_s || row.total_duration_s;
-        const durText = dur ? `${parseFloat(dur).toFixed(1)}s` : '—';
-        const status = (row.status || '').toLowerCase();
-        return `<tr>
-          <td class="td-mono">${row.timestamp || ''}</td>
-          <td>${row.name || ''}</td>
-          <td class="td-mono">${row.phone || ''}</td>
-          <td><span class="badge badge--${status}">${row.status || ''}</span></td>
-          <td class="td-mono">${durText}</td>
-        </tr>`;
-      }).join('');
-    }
-  } catch (_) {}
-}
-setInterval(refreshDashboard, 15000);
-document.addEventListener('DOMContentLoaded', () => {
-  let lastRunning = false;
-  setInterval(async () => {
-    try {
-      const r = await fetch('/api/run/status');
-      const state = await r.json();
-      const running = !!state.is_running;
-      if (lastRunning && !running) refreshDashboard();
-      lastRunning = running;
-    } catch (_) {}
-  }, 3000);
-});
-</script>
 {% endblock %}

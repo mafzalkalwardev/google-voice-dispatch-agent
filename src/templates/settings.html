@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% set active_page = "settings" %}
 
-{% block title %}Settings — INDUS TRANSPORTS LLC{% endblock %}
+{% block title %}Settings — FT Solutions{% endblock %}
 
 {% block content %}
 <div class="page-header">
@@ -22,11 +22,11 @@
     <div class="form-grid">
       <div class="form-group">
         <label>Agent Name</label>
-        <input type="text" name="agent_name" value="{{ cfg.agent_name or 'Tony' }}" />
+        <input type="text" name="agent_name" value="{{ cfg.agent_name or 'Jason' }}" />
       </div>
       <div class="form-group">
         <label>Company Name</label>
-        <input type="text" name="company_name" value="{{ cfg.company_name or 'Indus Transports LLC' }}" />
+        <input type="text" name="company_name" value="{{ cfg.company_name or 'FT Solutions' }}" />
       </div>
       <div class="form-group">
         <label>Company Website</label>

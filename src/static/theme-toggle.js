@@ -4,12 +4,11 @@
   // Expose debug hook (optional)
 
 
-  const storageKey = 'indus_theme';
+  const storageKey = 'ft_theme';
 
   function applyTheme(theme) {
     const html = document.documentElement;
-    if (theme === 'dark') html.setAttribute('data-theme', 'dark');
-    else html.removeAttribute('data-theme');
+    html.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
   }
 
   function getPreferredTheme() {
@@ -22,9 +21,7 @@
     }
 
     if (theme === 'light' || theme === 'dark') return theme;
-
-    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-    return prefersDark ? 'dark' : 'light';
+    return 'dark';
   }
 
   function hookToggleButtons() {
@@ -32,7 +29,7 @@
     if (!btn) return;
 
     function refreshLabel() {
-      const current = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+      const current = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
       btn.textContent = current === 'dark' ? 'Light' : 'Dark';
       const isDark = current === 'dark';
       btn.setAttribute('aria-pressed', isDark ? 'true' : 'false');
@@ -60,4 +57,3 @@
     hookToggleButtons();
   });
 })();
-

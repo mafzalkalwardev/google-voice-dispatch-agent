@@ -91,10 +91,6 @@ It can run as a console app, a FastAPI operator console, or a packaged Windows E
 
 ---
 
-## Screenshots
-
-![Application screenshot](docs/screenshots/app.png)
-
 ## Why This Exists
 
 Most outbound AI voice demos assume a telephony API. This project is different: it works around the practical reality of Google Voice running in a browser. That means the hard parts are not only AI responses. The hard parts are state detection, browser DOM drift, audio routing, ringing safety, voicemail timing, and long-running operational reliability.
@@ -210,15 +206,203 @@ Then edit `.env` and `dialer_config.json`.
 
 ---
 
+## How to Install on New PC
+
+Use this when moving **SPECTRUM CODEX** from this laptop to another Windows PC.
+
+### 1. Copy the project folder
+
+Copy the full project folder to the new PC, for example:
+
+```text
+C:\Users\YourName\Downloads\spectrum codex\spectrum codex
+```
+
+Do not copy only `src/`; keep `requirements.txt`, `setup_project.bat`, `setup_project.ps1`, `data/`, and the launcher files together.
+
+### 2. Run the one-click setup
+
+Double-click:
+
+```text
+setup_project.bat
+```
+
+If Windows blocks dependency install or audio packages, right-click `setup_project.bat` and choose **Run as administrator**.
+
+The setup script will:
+
+- Use `winget` when available to install/check Python 3.12, Google Chrome, Microsoft Visual C++ Redistributable, and FFmpeg.
+- Check Python and Python version.
+- Create `.venv` if missing.
+- Rebuild `.venv` if it was copied from another PC and points to an old Python path.
+- Upgrade pip.
+- Install `requirements.txt`.
+- Create missing runtime folders.
+- Create `.env` only if it does not already exist.
+- Create `.env.example` and a starter `data/contacts.csv` if missing.
+- Check for Chrome, Edge, or Chromium.
+- Create launcher files for backend, tests, quickstart, and agent runs.
+
+The installer is safe: it does not delete call data and does not overwrite an existing `.env`.
+
+VB-CABLE still needs manual installation from `https://vb-audio.com/Cable/` if Windows does not already have the virtual audio cable. The installer detects and warns about it, but it does not silently install audio drivers.
+
+### 3. Fill `.env`
+
+Open `.env` and set at least:
+
+```env
+GROQ_API_KEY=your_real_groq_key
+CALLBACK_NUMBER=your_google_voice_callback_number
+CONTACTS_FILE=data/contacts.csv
+LOOPBACK_DEVICE=CABLE Input
+CAPTURE_DEVICE=default
+```
+
+For Google Voice calling, install/configure VB-CABLE and make sure Chrome has permission to use the correct microphone.
+
+### 4. Run the backend or agent
+
+Start the web console:
+
+```text
+run_backend.bat
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
+Run tests:
+
+```text
+run_tests.bat
+```
+
+Run the Spectrum agent directly:
+
+```text
+run_agent.bat
+```
+
+Run the existing quickstart through the virtual environment:
+
+```text
+run_quickstart.bat
+```
+
+Before live calling, open the Chrome profile, log into Google Voice, and run the app preflight checks.
+
+### Troubleshooting New PC Setup
+
+PowerShell execution policy blocked:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup_project.ps1
+```
+
+winget not available:
+
+- Install **App Installer** from Microsoft Store, or install Python 3.12 and Google Chrome manually.
+- Then run `setup_project.bat` again.
+
+Python 3.12 not found:
+
+- Install Python 3.12 from `https://www.python.org/downloads/release/python-312/`.
+- During install, check **Add Python to PATH**.
+- Close and reopen Command Prompt or PowerShell.
+- Run `setup_project.bat` again.
+- Do not use Python 3.14 for this project; some dependencies may not support it yet.
+
+Copied `.venv` from another computer fails with `No Python at old path`:
+
+- This happens because virtual environments store absolute paths to the Python install that created them.
+- The installer now checks `.venv\Scripts\python.exe`; if it cannot run or is not Python 3.12, it removes and recreates `.venv` automatically.
+- If automatic recreation fails, close all terminals using the project and run `setup_project.bat` again.
+- Manual fix:
+
+```powershell
+Remove-Item -Recurse -Force .\.venv
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+pip install failed:
+
+- Check internet connection.
+- Run `setup_project.bat` as administrator.
+- Confirm Python 3.12 is installed:
+
+```powershell
+py -3.12 --version
+```
+
+- Try:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+- If audio wheels fail, install Microsoft Visual C++ Redistributable and retry.
+
+sounddevice or soundcard issue:
+
+- Confirm the packages installed:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip show sounddevice soundcard soundfile
+```
+
+- Reinstall if needed:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install sounddevice soundcard soundfile
+```
+
+- Run the app Audio page or:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.main --list-audio-devices
+```
+
+Chrome driver or Selenium issue:
+
+- Install/update Google Chrome.
+- Close all Chrome windows using the same profile.
+- Delete only stale `DevToolsActivePort` files if Chrome crashed, not the whole profile.
+- Re-run setup so `webdriver-manager` is installed.
+- Open Google Voice manually once and log in before automation.
+
+Microphone or audio device issue:
+
+- Install VB-CABLE.
+- Set agent playback to `CABLE Input`.
+- Set Chrome/Google Voice microphone to `CABLE Output`.
+- Keep `CAPTURE_DEVICE=default` for simple testing, or use a dedicated second cable for cleaner caller capture.
+- Run:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.main --audio-route-test
+```
+
+If the app starts but Google Voice does not dial, first confirm the saved Chrome profile is logged into Google Voice on the new PC.
+
+---
+
 ## Configuration
 
 Common `.env` values:
 
 ```env
 GROQ_API_KEY=your_key_here
-# Optional failover (separate Groq accounts): GROQ_API_KEY_2=... GROQ_API_KEY_3=...
-PROFILE_NAME=sales_profile
-LOOPBACK_DEVICE=CABLE Input
+GOOGLE_VOICE_URL=https://voice.google.com/u/0/calls
+CHROME_PROFILE_DIR=chrome_profiles/sales_profile
+PLAYBACK_DEVICE=CABLE Input
 CAPTURE_DEVICE=default
 CALLBACK_NUMBER=your_callback_number
 ```
@@ -231,8 +415,6 @@ Common `dialer_config.json` values:
   "max_ring_seconds": 45,
   "voicemail_detect_seconds": 15,
   "silence_does_not_end_call": true,
-  "use_stt_context": true,
-  "max_silence_seconds": 8,
   "call_cooldown_seconds": 10,
   "tts_warmup": true,
   "stt_retry_count": 2,
@@ -290,18 +472,6 @@ Start normal calling:
 
 ```powershell
 python -m src.main
-```
-
-Resume a partially completed list (skips numbers already dialed in the last run):
-
-```powershell
-python -m src.main
-```
-
-Start fresh on the same list:
-
-```powershell
-python -m src.main --reset-batch-progress
 ```
 
 Start the web console:

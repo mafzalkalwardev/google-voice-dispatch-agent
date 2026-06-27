@@ -1,6 +1,6 @@
 """
-INDUS TRANSPORTS LLC — Dispatch Agent Operator Console
-FastAPI + Jinja2 web frontend for the Google Voice dispatch agent.
+FT Solutions AI Calling Console
+FastAPI + Jinja2 web frontend for the Google Voice calling agent.
 
 Run with:
     python -m src.web_app
@@ -52,15 +52,13 @@ logger = logging.getLogger("GoogleVoiceAgent.WebApp")
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="INDUS TRANSPORTS LLC — Dispatch Agent Console",
+    title="FT Solutions AI Calling Console",
     docs_url=None,
     redoc_url=None,
 )
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-
-WEB_APP_BUILD = "2026-06-02-call-sync"
 
 # Custom Jinja2 filters
 templates.env.filters["basename"] = lambda p: Path(str(p or "")).name
@@ -81,15 +79,6 @@ _CONFIG_KEYS = [
     "min_ring_seconds", "max_ring_seconds", "voicemail_detect_seconds",
     "vad_silence_frames", "vad_speech_frames", "stt_retry_count",
     "tts_warmup", "call_cooldown_seconds",
-    "silence_does_not_end_call", "use_stt_context", "max_silence_seconds",
-    "llm_model_realtime", "llm_model_batch", "listen_after_tts_delay_ms",
-    "use_thinking_fillers", "filler_probability", "stream_llm_replies",
-    "voicemail_max_wait_seconds", "voicemail_play_on_greeting",
-    "voicemail_play_after_seconds", "voicemail_message_max_seconds",
-    "voicemail_greeting_frames_required", "screening_purpose_text",
-    "chrome_restart_every_n_calls", "max_calls_per_run",
-    "groq_max_retries_per_minute", "avoid_gv_page_reload",
-    "use_call_intelligence",
 ]
 
 
@@ -134,20 +123,6 @@ def _load_config() -> dict:
             "vad_speech_frames": cfg.vad_speech_frames,
             "stt_retry_count": cfg.stt_retry_count,
             "tts_warmup": cfg.tts_warmup,
-            "silence_does_not_end_call": cfg.silence_does_not_end_call,
-            "use_stt_context": cfg.use_stt_context,
-            "max_silence_seconds": cfg.max_silence_seconds,
-            "llm_model_realtime": cfg.llm_model_realtime,
-            "llm_model_batch": cfg.llm_model_batch,
-            "listen_after_tts_delay_ms": cfg.listen_after_tts_delay_ms,
-            "use_thinking_fillers": cfg.use_thinking_fillers,
-            "filler_probability": cfg.filler_probability,
-            "stream_llm_replies": cfg.stream_llm_replies,
-            "voicemail_max_wait_seconds": cfg.voicemail_max_wait_seconds,
-            "voicemail_play_on_greeting": cfg.voicemail_play_on_greeting,
-            "chrome_restart_every_n_calls": cfg.chrome_restart_every_n_calls,
-            "avoid_gv_page_reload": cfg.avoid_gv_page_reload,
-            "use_call_intelligence": cfg.use_call_intelligence,
         }
     except Exception:
         merged = {}
@@ -303,46 +278,32 @@ run_manager = RunManager()
 # ---------------------------------------------------------------------------
 
 def _read_call_logs(limit: int = 100) -> List[dict]:
-    from src.call_log import read_call_logs  # type: ignore
-
-    return read_call_logs(limit=limit, path=CALL_LOG_FILE)
-
-
-def _call_log_stats() -> dict:
-    from src.call_log import call_log_stats  # type: ignore
-
-    return call_log_stats(path=CALL_LOG_FILE)
-
-
-def _resolve_contacts_path(contacts_file: Optional[str] = None) -> Path | None:
-    path_str = contacts_file or _load_config().get("contacts_file", "")
-    if not path_str:
-        return None
-    p = Path(path_str)
-    if not p.is_absolute():
-        p = BASE_DIR / p
-    return p
+    if not CALL_LOG_FILE.exists():
+        return []
+    rows = []
+    try:
+        with open(CALL_LOG_FILE, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(dict(row))
+    except Exception:
+        return []
+    return list(reversed(rows))[:limit]
 
 
 def _get_contacts_preview(contacts_file: Optional[str] = None) -> dict:
-    p = _resolve_contacts_path(contacts_file)
-    if p is None:
+    path_str = contacts_file or _load_config().get("contacts_file", "")
+    if not path_str:
         return {"rows": [], "total": 0, "error": "No contacts file configured"}
+    p = Path(path_str)
+    if not p.is_absolute():
+        p = BASE_DIR / p
     if not p.exists():
         return {"rows": [], "total": 0, "error": f"File not found: {p.name}"}
     try:
-        from src.contacts_index import get_total_count, query_contacts
-        from src.call_intelligence import enrich_contact_row, intelligence_stats
-
-        total = get_total_count(p)
-        page_data = query_contacts(p, page=1, per_page=15, ensure_index=False)
-        stats = intelligence_stats()
-        return {
-            "rows": [enrich_contact_row(c) for c in page_data["rows"]],
-            "total": total,
-            "error": None,
-            "intelligence": stats,
-        }
+        from src.contacts import load_contacts  # type: ignore
+        rows = load_contacts(p)
+        return {"rows": rows[:15], "total": len(rows), "error": None}
     except Exception as exc:
         return {"rows": [], "total": 0, "error": str(exc)}
 
@@ -382,6 +343,7 @@ def _build_run_args(
     dry_run: bool,
 ) -> List[str]:
     args = [
+        "--agent-type", "spectrum",
         "--contacts", contacts,
         "--profile", profile,
         "--limit", str(limit),
@@ -406,7 +368,6 @@ async def dashboard(request: Request):
     return templates.TemplateResponse(request, "index.html", {
         "recent_logs": logs,
         "run_state": state,
-        "log_stats": _call_log_stats(),
     })
 
 
@@ -421,119 +382,14 @@ async def settings_page(request: Request):
     return templates.TemplateResponse(request, "settings.html", {"cfg": cfg})
 
 
-def _contacts_list_payload(
-    contacts_file: Optional[str],
-    *,
-    page: int = 1,
-    per_page: int = 50,
-    q: str = "",
-    hide_blocked: bool = False,
-) -> dict:
-    """Load one page of contacts from the SQLite index."""
-    p = _resolve_contacts_path(contacts_file)
-    if p is None or not p.exists():
-        return {
-            "ok": False,
-            "error": "Contacts file not configured",
-            "rows": [],
-            "total": 0,
-            "page": 1,
-            "pages": 1,
-            "start": 0,
-            "end": 0,
-            "per_page": per_page,
-        }
-    from src.contacts_index import query_contacts
-    from src.call_intelligence import enrich_contact_row, intelligence_stats
-
-    page_data = query_contacts(p, page=page, per_page=per_page, query=q)
-    rows = [enrich_contact_row(c) for c in page_data["rows"]]
-    if hide_blocked:
-        rows = [r for r in rows if r.get("intel_status") not in ("blocked", "dnc")]
-    page_data["rows"] = rows
-    page_data["ok"] = True
-    page_data["intelligence"] = intelligence_stats()
-    return page_data
-
-
 @app.get("/contacts", response_class=HTMLResponse)
-async def contacts_page(
-    request: Request,
-    page: int = 1,
-    per_page: int = 50,
-    q: str = "",
-    hide_blocked: bool = False,
-):
-    import asyncio
-
+async def contacts_page(request: Request):
     cfg = _load_config()
-    contacts_file = cfg.get("contacts_file")
-    preview = _get_contacts_preview(contacts_file)
-    list_error = None
-    list_data: dict = {"rows": [], "total": 0, "page": 1, "pages": 1, "start": 0, "end": 0}
-
-    if preview.get("total", 0) > 0 and not preview.get("error"):
-        try:
-            list_data = await asyncio.to_thread(
-                lambda: _contacts_list_payload(
-                    contacts_file,
-                    page=page,
-                    per_page=per_page,
-                    q=q,
-                    hide_blocked=hide_blocked,
-                )
-            )
-            if not list_data.get("ok"):
-                list_error = list_data.get("error")
-        except Exception as exc:
-            logger.exception("contacts page load failed")
-            list_error = str(exc)
-
-    use_intel = cfg.get("use_call_intelligence", True)
-    if isinstance(use_intel, str):
-        use_intel = use_intel.lower() not in ("false", "0", "no")
-
+    preview = _get_contacts_preview(cfg.get("contacts_file"))
     return templates.TemplateResponse(request, "contacts.html", {
-        "contacts_file": contacts_file or "",
+        "contacts_file": cfg.get("contacts_file", ""),
         "preview": preview,
-        "use_call_intelligence": use_intel,
-        "list_data": list_data,
-        "list_error": list_error,
-        "query": q,
-        "per_page": per_page,
-        "hide_blocked": hide_blocked,
-        "web_build": WEB_APP_BUILD,
     })
-
-
-async def _api_contacts_list_handler(page: int, per_page: int, q: str) -> dict:
-    import asyncio
-
-    cfg = _load_config()
-    try:
-        return await asyncio.to_thread(
-            lambda: _contacts_list_payload(
-                cfg.get("contacts_file"),
-                page=page,
-                per_page=per_page,
-                q=q,
-            )
-        )
-    except FileNotFoundError as exc:
-        return {"ok": False, "error": str(exc), "rows": [], "total": 0}
-    except Exception as exc:
-        logger.exception("contacts/list failed")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@app.get("/api/contacts/list")
-@app.get("/api/contacts")  # alias — some older bookmarks/tools hit this path
-async def api_contacts_list(
-    page: int = 1,
-    per_page: int = 50,
-    q: str = "",
-):
-    return await _api_contacts_list_handler(page, per_page, q)
 
 
 @app.get("/audio", response_class=HTMLResponse)
@@ -572,23 +428,6 @@ async def run_page(request: Request):
     })
 
 
-@app.get("/api/batch-progress")
-async def api_batch_progress():
-    from pathlib import Path
-    from src.batch_progress import contacts_fingerprint, get_completed_phones
-
-    cfg = _load_config()
-    contacts_path = Path(cfg.get("contacts_file", "data/contacts.xlsx"))
-    fp = contacts_fingerprint(contacts_path)
-    completed = sorted(get_completed_phones(fp))
-    return {
-        "contacts_file": str(contacts_path),
-        "fingerprint": fp,
-        "completed_count": len(completed),
-        "completed_phones": completed,
-    }
-
-
 @app.get("/logs", response_class=HTMLResponse)
 async def logs_page(request: Request):
     logs = _read_call_logs(limit=200)
@@ -604,11 +443,11 @@ async def leads_page(request: Request):
 
 @app.get("/recordings", response_class=HTMLResponse)
 async def recordings_page(request: Request):
-    """Render recent connected and voicemail calls (with recordings when available)."""
-    from src.crm import get_recent_call_artifacts  # type: ignore
+    """Render attended/connected call recordings."""
+    from src.crm import get_connected_calls  # type: ignore
 
     try:
-        calls = get_recent_call_artifacts(limit=100) or []
+        calls = get_connected_calls() or []
     except Exception:
         calls = []
 
@@ -618,9 +457,9 @@ async def recordings_page(request: Request):
 @app.get("/recordings/{call_id}", response_class=HTMLResponse)
 async def recording_view_page(request: Request, call_id: str):
     """Dedicated recording viewer (audio + transcript + AI summary)."""
-    from src.crm import get_call_for_ui  # type: ignore
+    from src.crm import get_connected_call  # type: ignore
 
-    call = get_call_for_ui(call_id)
+    call = get_connected_call(call_id)
     return templates.TemplateResponse(request, "recording_view.html", {"call": call})
 
 
@@ -641,6 +480,7 @@ async def connected_calls_page(request: Request):
     })
 
 
+@app.get("/crm", response_class=HTMLResponse)
 @app.get("/carrier-crm", response_class=HTMLResponse)
 async def carrier_crm_page(request: Request):
     from src.crm import get_carrier_profiles, carrier_stats  # type: ignore
@@ -654,6 +494,7 @@ async def carrier_crm_page(request: Request):
     })
 
 
+@app.get("/crm/{phone}", response_class=HTMLResponse)
 @app.get("/carrier-crm/{phone}", response_class=HTMLResponse)
 async def carrier_profile_page(request: Request, phone: str):
     from src.crm import get_carrier_profile  # type: ignore
@@ -735,9 +576,9 @@ async def api_upload_contacts(file: UploadFile = File(...)):
     _save_config({"contacts_file": str(dest)})
     # Preview
     try:
-        from src.contacts_index import build_index
-
-        count = build_index(dest, force=True)
+        from src.contacts import load_contacts  # type: ignore
+        rows = load_contacts(dest)
+        count = len(rows)
     except Exception as exc:
         return {"ok": False, "error": str(exc), "path": str(dest)}
     return {"ok": True, "path": str(dest), "count": count}
@@ -910,15 +751,6 @@ async def api_run_stream(request: Request, since: int = 0):
 @app.get("/api/logs")
 async def api_logs(limit: int = 200):
     return _read_call_logs(limit=limit)
-
-
-@app.get("/api/dashboard/stats")
-async def api_dashboard_stats():
-    return {
-        "logs": _call_log_stats(),
-        "recent": _read_call_logs(limit=10),
-        "run": run_manager.get_state(),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1161,7 +993,7 @@ async def api_get_transcript(filename: str):
 # ---------------------------------------------------------------------------
 
 def _server_port(default: int = 8000) -> int:
-    raw_port = os.environ.get("INDUS_CONSOLE_PORT")
+    raw_port = os.environ.get("FT_CONSOLE_PORT")
     for idx, arg in enumerate(sys.argv[1:]):
         if arg == "--port" and idx + 2 <= len(sys.argv[1:]):
             raw_port = sys.argv[idx + 2]
@@ -1179,26 +1011,13 @@ def _server_port(default: int = 8000) -> int:
     return port
 
 
-@app.on_event("startup")
-async def _web_startup() -> None:
-    logger.info("INDUS web console build=%s (contacts API: /api/contacts/list)", WEB_APP_BUILD)
-
-
 def main() -> None:
     import uvicorn  # type: ignore
-
     runtime_base()
-    port = _server_port()
-    try:
-        from src.scripts.kill_port import kill_port  # type: ignore
-
-        kill_port(port)
-    except Exception:
-        pass
     uvicorn.run(
         "src.web_app:app",
         host="127.0.0.1",
-        port=port,
+        port=_server_port(),
         reload=False,
         log_level="info",
         log_config=None,
