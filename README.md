@@ -690,6 +690,23 @@ Use a number you own or have permission to call:
 
 ---
 
+## Compliance and Responsible Use
+
+This project can place real outbound calls through Google Voice. It is intended for lawful, permission-based business workflows only. Users are responsible for:
+
+- **Consent** and permission-based outreach before calling
+- **Do Not Call** lists and applicable telemarketing regulations
+- **Caller ID** accuracy and business identification
+- **Recording disclosure** where required by law
+- **Google Voice terms**, carrier/account limits, and spam prevention
+- Local privacy, employment, and telecommunications laws
+
+This software must not be used for spam, harassment, deceptive robocalling, or unauthorized calling. The maintainers are not responsible for misuse.
+
+**Status:** Client-ready · Windows desktop · use demo contacts for testing
+
+---
+
 ## Repository Hygiene
 
 The repository keeps source, tests, packaging scripts, workflows, and examples. It intentionally excludes local runtime data, browser profiles, build folders, logs, recordings, generated voicemails, secrets, and private contact data.
