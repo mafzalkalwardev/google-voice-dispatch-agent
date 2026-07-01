@@ -86,6 +86,8 @@ def run_console(open_browser: bool = True, port: int = DEFAULT_PORT) -> None:
     )
 
 
+    from indus_license_gate import require_license
+    require_license(runtime_base())
 def main() -> None:
     args = sys.argv[1:]
     if args and args[0] == "--agent-cli":

@@ -980,6 +980,8 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
     logger.info("Safe test call completed.")
 
 
+    from indus_license_gate import require_license
+    require_license(runtime_base())
 def main() -> None:
     args = _parse_args()
     if args.list_audio_devices:
