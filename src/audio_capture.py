@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import sys
 import threading
 from typing import Optional
 
@@ -35,6 +36,30 @@ _SAMPLERATE = 16000   # Whisper-native; also VAD-compatible
 _FRAME_MS   = 30      # 30 ms per frame
 
 _LOOPBACK_ALIASES = frozenset({"default", "loopback", "speaker", "speakers"})
+
+
+def _initialize_com_for_capture_thread() -> bool:
+    """Initialize COM inside the worker that opens Windows WASAPI devices."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    # COINIT_MULTITHREADED is appropriate for a background capture worker.
+    result = int(ctypes.windll.ole32.CoInitializeEx(None, 0))
+    unsigned = result & 0xFFFFFFFF
+    if unsigned in (0, 1):  # S_OK or S_FALSE
+        return True
+    if unsigned == 0x80010106:  # RPC_E_CHANGED_MODE: COM was already initialized
+        return False
+    raise OSError(unsigned, f"CoInitializeEx failed with HRESULT 0x{unsigned:08X}")
+
+
+def _uninitialize_com_for_capture_thread(initialized: bool) -> None:
+    if not initialized or sys.platform != "win32":
+        return
+    import ctypes
+
+    ctypes.windll.ole32.CoUninitialize()
 
 
 class AudioCapture:
@@ -61,6 +86,14 @@ class AudioCapture:
     def start(self) -> None:
         self._stop.clear()
         self._error = None
+        if self.device_name_hint.lower() in _LOOPBACK_ALIASES:
+            # soundcard initializes its module-level COM helper at import time.
+            # Load it on the caller thread first; the capture worker performs its
+            # own balanced COM initialization in _run().
+            try:
+                import soundcard  # noqa: F401
+            except ImportError:
+                pass
         self._thread = threading.Thread(
             target=self._run, name="AudioCapture", daemon=True
         )
@@ -97,7 +130,9 @@ class AudioCapture:
             self._q.put(frame)
 
     def _run(self) -> None:
+        com_initialized = False
         try:
+            com_initialized = _initialize_com_for_capture_thread()
             if self.device_name_hint.lower() in _LOOPBACK_ALIASES:
                 self._run_soundcard_loopback()
             else:
@@ -105,6 +140,8 @@ class AudioCapture:
         except Exception as exc:
             self._error = exc
             logger.error("AudioCapture thread error: %s", exc)
+        finally:
+            _uninitialize_com_for_capture_thread(com_initialized)
 
     def _run_soundcard_loopback(self) -> None:
         """WASAPI loopback on the system default speaker."""

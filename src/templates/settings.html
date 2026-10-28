@@ -16,6 +16,27 @@
 
 <form id="settingsForm" onsubmit="saveSettings(event)">
 
+  <div class="panel">
+    <div class="panel-header"><h3 class="panel-title">Google Voice Accounts</h3></div>
+    <p class="field-hint" style="margin-bottom:1rem">Each enabled account gets its own persistent Chrome profile and calling worker. Passwords are encrypted for this Windows user and are never returned to the page. Google verification, MFA, or CAPTCHA must be completed in the opened Chrome window.</p>
+    <div id="accountRows"></div>
+    <div class="form-grid" style="margin-top:1rem">
+      <input type="hidden" id="gvId" />
+      <div class="form-group"><label>Account Label</label><input id="gvName" type="text" placeholder="Dispatch line 1" /></div>
+      <div class="form-group"><label>Google Email</label><input id="gvEmail" type="email" autocomplete="username" /></div>
+      <div class="form-group"><label>Password</label><input id="gvPassword" type="password" autocomplete="current-password" placeholder="Leave blank to keep saved password" /></div>
+      <div class="form-group"><label>Chrome Profile</label><input id="gvProfile" type="text" placeholder="dispatch_line_1" /></div>
+      <div class="form-group"><label>Loopback Device</label><input id="gvLoopback" type="text" placeholder="CABLE-A Input" /></div>
+      <div class="form-group"><label>Capture Device</label><input id="gvCapture" type="text" placeholder="CABLE-A Output" /></div>
+      <div class="form-group"><label class="check-row"><input id="gvEnabled" type="checkbox" checked /> Enabled for calling</label></div>
+    </div>
+    <div class="form-actions">
+      <button type="button" class="btn btn-primary" onclick="saveAccount()">Add / Update Account</button>
+      <button type="button" class="btn" onclick="clearAccountForm()">Clear</button>
+    </div>
+    <div id="accountError" class="alert alert-error" style="display:none;margin-top:1rem"></div>
+  </div>
+
   <!-- Identity -->
   <div class="panel">
     <div class="panel-header"><h3 class="panel-title">Identity &amp; Contact</h3></div>
@@ -55,6 +76,38 @@
         <label>Contacts File Path</label>
         <input type="text" name="contacts_file" value="{{ cfg.contacts_file or 'data/contacts.xlsx' }}" />
         <div class="field-hint">Use the <a href="/contacts">Contacts</a> page to upload a new file.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Parallel calling -->
+  <div class="panel">
+    <div class="panel-header"><h3 class="panel-title">Parallel Calling</h3></div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label>Concurrent Slots</label>
+        <input type="number" name="n_slots" value="{{ cfg.n_slots or 1 }}" min="1" max="15" />
+      </div>
+      <div class="form-group">
+        <label>Maximum Concurrent Dials</label>
+        <input type="number" name="max_concurrent_dials" value="{{ cfg.max_concurrent_dials or 5 }}" min="1" max="15" />
+      </div>
+      <div class="form-group">
+        <label class="check-row">
+          <input type="checkbox" name="force_requested_slots" {% if cfg.force_requested_slots %}checked{% endif %} />
+          Override resource-based slot cap
+        </label>
+      </div>
+      <div class="form-group">
+        <label class="check-row">
+          <input type="checkbox" name="allow_shared_audio_routes" {% if cfg.allow_shared_audio_routes %}checked{% endif %} />
+          Allow shared audio routes (controlled tests only)
+        </label>
+      </div>
+      <div class="form-group form-group--wide">
+        <label>Slot Profiles <span class="label-hint">(JSON array; one isolated route per slot)</span></label>
+        <textarea name="parallel_profiles" rows="8">{{ cfg.parallel_profiles | tojson(indent=2) }}</textarea>
+        <div class="field-hint">Each entry requires profile_name, loopback_device, and capture_device. Keep shared audio disabled for normal calling.</div>
       </div>
     </div>
   </div>
@@ -173,12 +226,79 @@
 
 {% block scripts %}
 <script>
+let gvAccounts = {{ gv_accounts | tojson }};
+
+function esc(value) {
+  return String(value || '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
+}
+
+function renderAccounts() {
+  const root = document.getElementById('accountRows');
+  if (!gvAccounts.length) {
+    root.innerHTML = '<div class="field-hint">No accounts added yet. Add the first line below.</div>';
+    return;
+  }
+  root.innerHTML = gvAccounts.map(a => `
+    <div class="panel" style="margin:0 0 .6rem;padding:1rem">
+      <strong>${esc(a.name)}</strong> &middot; ${esc(a.email)}
+      <div class="field-hint">Profile: ${esc(a.profile_name)} &middot; Audio: ${a.audio_ready ? 'configured' : 'missing'} &middot; Session: ${a.session_ready ? 'verified' : 'connect required'}${a.has_password ? ' &middot; encrypted password saved' : ''}</div>
+      <div class="form-actions" style="margin-top:.6rem">
+        <button type="button" class="btn" onclick="connectAccount('${a.id}')">Connect / Verify</button>
+        <button type="button" class="btn" onclick="editAccount('${a.id}')">Edit</button>
+        <button type="button" class="btn" onclick="deleteAccount('${a.id}')">Remove</button>
+        <span id="gvStatus-${a.id}" class="field-hint">${esc(a.connect_message || '')}</span>
+      </div>
+    </div>`).join('');
+}
+
+function editAccount(id) {
+  const a = gvAccounts.find(x => x.id === id); if (!a) return;
+  gvId.value=a.id; gvName.value=a.name; gvEmail.value=a.email; gvPassword.value='';
+  gvProfile.value=a.profile_name; gvLoopback.value=a.loopback_device; gvCapture.value=a.capture_device; gvEnabled.checked=a.enabled;
+}
+
+function clearAccountForm() {
+  gvId.value=''; gvName.value=''; gvEmail.value=''; gvPassword.value=''; gvProfile.value=''; gvLoopback.value=''; gvCapture.value=''; gvEnabled.checked=true;
+}
+
+async function refreshAccounts() {
+  const r = await fetch('/api/gv-accounts'); const data = await r.json();
+  if (data.ok) { gvAccounts = data.accounts; renderAccounts(); }
+}
+
+async function saveAccount() {
+  const err = document.getElementById('accountError'); err.style.display='none';
+  const payload = {id:gvId.value || undefined,name:gvName.value,email:gvEmail.value,password:gvPassword.value,profile_name:gvProfile.value,loopback_device:gvLoopback.value,capture_device:gvCapture.value,enabled:gvEnabled.checked};
+  const r = await fetch('/api/gv-accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const data = await r.json();
+  if (!data.ok) { err.textContent=data.error || data.detail || 'Save failed'; err.style.display='block'; return; }
+  clearAccountForm(); await refreshAccounts();
+}
+
+async function deleteAccount(id) {
+  if (!confirm('Remove this account from the dialer? Its Chrome profile is preserved.')) return;
+  await fetch('/api/gv-accounts/'+id,{method:'DELETE'}); await refreshAccounts();
+}
+
+async function connectAccount(id) {
+  await fetch('/api/gv-accounts/'+id+'/connect',{method:'POST'});
+  const poll = setInterval(async () => {
+    await refreshAccounts();
+    const a=gvAccounts.find(x=>x.id===id);
+    if (!a || !['connecting','verification_required'].includes(a.connect_status)) clearInterval(poll);
+  }, 2000);
+}
+
+renderAccounts();
+
 async function saveSettings(e) {
   e.preventDefault();
   const form = document.getElementById('settingsForm');
   const data = Object.fromEntries(new FormData(form).entries());
   data.wait_for_human_audio = form.elements.wait_for_human_audio.checked;
   data.tts_warmup = form.elements.tts_warmup.checked;
+  data.force_requested_slots = form.elements.force_requested_slots.checked;
+  data.allow_shared_audio_routes = form.elements.allow_shared_audio_routes.checked;
   const alert = document.getElementById('saveAlert');
   const errEl = document.getElementById('saveError');
   alert.style.display = 'none';

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from datetime import datetime
 from pathlib import Path
+import threading
 from typing import TYPE_CHECKING
 
 from src.paths import runtime_base
@@ -29,6 +30,7 @@ _HEADERS = [
 ]
 
 _LEGACY_HEADERS = {"timestamp", "phone", "name", "status", "notes"}
+_CALL_LOG_LOCK = threading.RLock()
 
 
 def _row_from_values(values: list[str]) -> dict:
@@ -180,7 +182,8 @@ class CallLogger:
         self._append(row)
 
     def _append(self, row: dict) -> None:
-        ensure_call_log_header(self.path)
-        with open(self.path, mode="a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=_HEADERS)
-            writer.writerow(row)
+        with _CALL_LOG_LOCK:
+            ensure_call_log_header(self.path)
+            with open(self.path, mode="a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=_HEADERS)
+                writer.writerow(row)

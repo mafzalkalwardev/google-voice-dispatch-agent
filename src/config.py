@@ -44,6 +44,11 @@ _DEFAULTS = {
     "max_ring_seconds": 45.0,             # stop waiting for no-answer calls after this window
     "voicemail_detect_seconds": 15.0,     # active voicemail cue window after answer evidence
     "call_cooldown_seconds": 10.0,        # pause between live calls
+    "n_slots": 1,
+    "max_concurrent_dials": 5,
+    "force_requested_slots": False,
+    "allow_shared_audio_routes": False,
+    "parallel_profiles": [],
     # VAD tuning — operators can adjust from Settings page
     "vad_silence_frames": 8,              # frames of silence before utterance ends (8×30ms=240ms)
     "listen_after_tts_delay_ms": 150,
@@ -167,6 +172,25 @@ class Config:
         )
         self.call_cooldown_seconds: float = float(
             os.getenv("CALL_COOLDOWN_SECONDS", j.get("call_cooldown_seconds", _DEFAULTS["call_cooldown_seconds"]))
+        )
+        self.n_slots: int = int(os.getenv("N_SLOTS", j.get("n_slots", _DEFAULTS["n_slots"])))
+        self.max_concurrent_dials: int = int(
+            os.getenv(
+                "MAX_CONCURRENT_DIALS",
+                j.get("max_concurrent_dials", _DEFAULTS["max_concurrent_dials"]),
+            )
+        )
+        self.force_requested_slots: bool = os.getenv(
+            "FORCE_REQUESTED_SLOTS",
+            str(j.get("force_requested_slots", _DEFAULTS["force_requested_slots"])),
+        ).lower() in ("true", "1", "yes")
+        self.allow_shared_audio_routes: bool = os.getenv(
+            "ALLOW_SHARED_AUDIO_ROUTES",
+            str(j.get("allow_shared_audio_routes", _DEFAULTS["allow_shared_audio_routes"])),
+        ).lower() in ("true", "1", "yes")
+        raw_parallel_profiles = j.get("parallel_profiles", _DEFAULTS["parallel_profiles"])
+        self.parallel_profiles: list[dict] = (
+            list(raw_parallel_profiles) if isinstance(raw_parallel_profiles, list) else []
         )
         self.vad_silence_frames: int = int(
             os.getenv("VAD_SILENCE_FRAMES", j.get("vad_silence_frames", _DEFAULTS["vad_silence_frames"]))

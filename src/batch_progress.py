@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ logger = logging.getLogger("GoogleVoiceAgent")
 
 BASE_DIR = runtime_base()
 PROGRESS_FILE = BASE_DIR / "logs" / "batch_progress.json"
+_PROGRESS_LOCK = threading.RLock()
 
 
 def contacts_fingerprint(contacts_path: Path) -> str:
@@ -39,22 +41,24 @@ def _save_raw(data: dict[str, Any]) -> None:
 
 
 def get_completed_phones(fingerprint: str) -> set[str]:
-    data = _load_raw()
-    entry = data.get("batches", {}).get(fingerprint, {})
-    phones = entry.get("completed_phones", [])
-    return {str(p) for p in phones}
+    with _PROGRESS_LOCK:
+        data = _load_raw()
+        entry = data.get("batches", {}).get(fingerprint, {})
+        phones = entry.get("completed_phones", [])
+        return {str(p) for p in phones}
 
 
 def mark_completed(fingerprint: str, phone: str, index: int) -> None:
-    data = _load_raw()
-    batches = data.setdefault("batches", {})
-    entry = batches.setdefault(fingerprint, {"completed_phones": [], "last_index": 0})
-    phones: list[str] = entry.setdefault("completed_phones", [])
-    if phone not in phones:
-        phones.append(phone)
-    entry["last_index"] = max(int(entry.get("last_index", 0)), int(index))
-    entry["contacts_file"] = fingerprint
-    _save_raw(data)
+    with _PROGRESS_LOCK:
+        data = _load_raw()
+        batches = data.setdefault("batches", {})
+        entry = batches.setdefault(fingerprint, {"completed_phones": [], "last_index": 0})
+        phones: list[str] = entry.setdefault("completed_phones", [])
+        if phone not in phones:
+            phones.append(phone)
+        entry["last_index"] = max(int(entry.get("last_index", 0)), int(index))
+        entry["contacts_file"] = fingerprint
+        _save_raw(data)
 
 
 def filter_contacts(contacts: list[dict], fingerprint: str, *, resume: bool) -> list[dict]:
@@ -74,10 +78,11 @@ def filter_contacts(contacts: list[dict], fingerprint: str, *, resume: bool) -> 
 
 
 def reset_progress(fingerprint: str | None = None) -> None:
-    data = _load_raw()
-    if fingerprint is None:
-        data.pop("batches", None)
-    else:
-        batches = data.get("batches", {})
-        batches.pop(fingerprint, None)
-    _save_raw(data)
+    with _PROGRESS_LOCK:
+        data = _load_raw()
+        if fingerprint is None:
+            data.pop("batches", None)
+        else:
+            batches = data.get("batches", {})
+            batches.pop(fingerprint, None)
+        _save_raw(data)

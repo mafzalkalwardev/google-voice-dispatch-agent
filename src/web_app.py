@@ -61,6 +61,8 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 WEB_APP_BUILD = "2026-06-02-call-sync"
+_account_connect_status: dict[str, dict] = {}
+_account_connect_lock = threading.Lock()
 
 # Custom Jinja2 filters
 templates.env.filters["basename"] = lambda p: Path(str(p or "")).name
@@ -89,7 +91,8 @@ _CONFIG_KEYS = [
     "voicemail_greeting_frames_required", "screening_purpose_text",
     "chrome_restart_every_n_calls", "max_calls_per_run",
     "groq_max_retries_per_minute", "avoid_gv_page_reload",
-    "use_call_intelligence",
+    "use_call_intelligence", "n_slots", "max_concurrent_dials",
+    "force_requested_slots", "allow_shared_audio_routes", "parallel_profiles",
 ]
 
 
@@ -148,6 +151,11 @@ def _load_config() -> dict:
             "chrome_restart_every_n_calls": cfg.chrome_restart_every_n_calls,
             "avoid_gv_page_reload": cfg.avoid_gv_page_reload,
             "use_call_intelligence": cfg.use_call_intelligence,
+            "n_slots": cfg.n_slots,
+            "max_concurrent_dials": cfg.max_concurrent_dials,
+            "force_requested_slots": cfg.force_requested_slots,
+            "allow_shared_audio_routes": cfg.allow_shared_audio_routes,
+            "parallel_profiles": cfg.parallel_profiles,
         }
     except Exception:
         merged = {}
@@ -418,7 +426,10 @@ async def preflight_page(request: Request):
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     cfg = _load_config()
-    return templates.TemplateResponse(request, "settings.html", {"cfg": cfg})
+    from src.gv_accounts import public_accounts
+    return templates.TemplateResponse(
+        request, "settings.html", {"cfg": cfg, "gv_accounts": public_accounts()}
+    )
 
 
 def _contacts_list_payload(
@@ -696,6 +707,7 @@ async def api_save_settings(request: Request):
     for f in (
         "call_timeout", "call_max_duration", "answer_confirm_polls",
         "vad_silence_frames", "vad_speech_frames", "stt_retry_count",
+        "n_slots", "max_concurrent_dials",
     ):
         if f in allowed:
             try:
@@ -713,11 +725,111 @@ async def api_save_settings(request: Request):
                 allowed[f] = float(allowed[f])
             except (ValueError, TypeError):
                 pass
-    for f in ("wait_for_human_audio", "tts_warmup"):
+    for f in (
+        "wait_for_human_audio", "tts_warmup", "force_requested_slots",
+        "allow_shared_audio_routes",
+    ):
         if f in allowed:
             allowed[f] = str(allowed[f]).lower() in ("true", "1", "yes", "on")
+    if "parallel_profiles" in allowed and isinstance(allowed["parallel_profiles"], str):
+        try:
+            parsed = json.loads(allowed["parallel_profiles"])
+            if not isinstance(parsed, list):
+                raise ValueError("parallel_profiles must be a JSON array")
+            allowed["parallel_profiles"] = parsed
+        except (json.JSONDecodeError, ValueError) as exc:
+            return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
     _save_config(allowed)
     return {"ok": True, "saved": list(allowed.keys())}
+
+
+@app.get("/api/gv-accounts")
+async def api_gv_accounts():
+    from src.gv_accounts import public_accounts
+    with _account_connect_lock:
+        statuses = dict(_account_connect_status)
+    rows = public_accounts()
+    for row in rows:
+        row["connect_status"] = statuses.get(row["id"], {}).get("status", "idle")
+        row["connect_message"] = statuses.get(row["id"], {}).get("message", "")
+    return {"ok": True, "accounts": rows}
+
+
+@app.post("/api/gv-accounts")
+async def api_save_gv_account(request: Request):
+    from src.gv_accounts import save_account
+    body = await request.json()
+    try:
+        account = save_account(body)
+    except (ValueError, OSError) as exc:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(exc)})
+    return {"ok": True, "account": account}
+
+
+@app.delete("/api/gv-accounts/{account_id}")
+async def api_delete_gv_account(account_id: str):
+    from src.gv_accounts import delete_account
+    if not delete_account(account_id):
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"ok": True}
+
+
+def _connect_gv_account(account_id: str) -> None:
+    from src.google_voice import GoogleVoiceBrowser
+    from src.gv_accounts import load_accounts
+
+    account = next(
+        (row for row in load_accounts(include_password=True) if row["id"] == account_id),
+        None,
+    )
+    if not account:
+        return
+
+    def status(value: str, message: str) -> None:
+        with _account_connect_lock:
+            _account_connect_status[account_id] = {"status": value, "message": message}
+        logger.info("[Account %s] %s", account["email"], message)
+
+    browser = GoogleVoiceBrowser(profile_name=account["profile_name"], headless=False)
+    try:
+        status("connecting", "Opening persistent Chrome profile")
+        browser.launch()
+        result = browser.ensure_logged_in(account["email"], account.get("password", ""), timeout=90)
+        if result == "verification_required":
+            status("verification_required", "Complete Google verification in the opened Chrome window")
+            if browser.wait_for_manual_login(timeout=300):
+                from src.gv_accounts import mark_session_ready
+                mark_session_ready(account["profile_name"])
+                result = "ready"
+            else:
+                result = "login_timeout"
+        if result == "ready":
+            status("ready", "Google Voice session verified and saved in this Chrome profile")
+        else:
+            status("error", f"Login did not complete: {result}")
+    except Exception as exc:
+        status("error", f"Connection failed: {exc}")
+    finally:
+        browser.close()
+
+
+@app.post("/api/gv-accounts/{account_id}/connect")
+async def api_connect_gv_account(account_id: str):
+    from src.gv_accounts import load_accounts
+    if not any(row["id"] == account_id for row in load_accounts()):
+        raise HTTPException(status_code=404, detail="Account not found")
+    with _account_connect_lock:
+        active = _account_connect_status.get(account_id, {}).get("status")
+        if active in ("connecting", "verification_required"):
+            return {"ok": True, "status": active}
+        _account_connect_status[account_id] = {"status": "connecting", "message": "Starting"}
+    threading.Thread(
+        target=_connect_gv_account,
+        args=(account_id,),
+        daemon=True,
+        name=f"GVConnect-{account_id[:8]}",
+    ).start()
+    return {"ok": True, "status": "connecting"}
 
 
 @app.post("/api/contacts/upload")

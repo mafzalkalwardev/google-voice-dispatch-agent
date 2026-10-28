@@ -68,6 +68,31 @@ def test_stop_event_terminates_run():
         assert elapsed < 3.0
 
 
+def test_stop_interrupts_tts_immediately():
+    loop, mock_tts, _, _ = _make_loop()
+
+    loop.stop()
+
+    assert loop._stop_event.is_set()
+    mock_tts.stop.assert_called_once_with()
+
+
+def test_stt_result_is_discarded_when_call_stops_during_transcription():
+    loop, _, mock_agent, mock_stt = _make_loop()
+    loop._response_active.set()
+    loop._speech_q.put(np.zeros(16000, dtype=np.float32))
+
+    def stop_during_stt(*args, **kwargs):
+        loop.stop()
+        return "late transcript"
+
+    mock_stt.transcribe.side_effect = stop_during_stt
+    loop._response_loop()
+
+    mock_agent.respond_to.assert_not_called()
+    mock_agent.respond_to_streaming.assert_not_called()
+
+
 def test_opening_line_spoken_on_run():
     """auto_opening=True should call tts.speak() with the agent's opening line."""
     with patch("src.conversation_loop.AudioCapture") as MockCapture, \

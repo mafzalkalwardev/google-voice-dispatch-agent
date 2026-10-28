@@ -102,17 +102,7 @@ code, kbd {
   background: linear-gradient(180deg, #060e1a 0%, #0B1F3A 40%, #0d2241 100%);
 }
 
-html[data-theme="light"] .sidebar {
-  background: linear-gradient(180deg, #ffffff 0%, #f3f6fb 40%, #edf2f8 100%);
-  border-right-color: var(--border);
-}
-
-html[data-theme="dark"] .brand-name,
-html[data-theme="dark"] .nav-section-label,
-html[data-theme="dark"] .sidebar-footer-text,
-html[data-theme="dark"] .nav-link {
-  color: var(--text);
-}
+/* Light/dark sidebar colors are finalized in dark-light.css */
 
 
 

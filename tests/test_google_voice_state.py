@@ -359,6 +359,16 @@ class TestEndDetection:
 
 class TestSelectorHelpers:
 
+    def test_google_accounts_redirect_is_not_treated_as_logged_in(self):
+        browser = _make_browser()
+        browser.driver.current_url = (
+            "https://accounts.google.com/v3/signin/confirmidentifier?"
+            "continue=https%3A%2F%2Fvoice.google.com%2Fu%2F0%2Fcalls"
+        )
+
+        assert browser.is_logged_in() is False
+
+
     def test_find_first_skips_hidden_element_for_same_selector(self):
         browser = _make_browser()
         hidden = MagicMock()

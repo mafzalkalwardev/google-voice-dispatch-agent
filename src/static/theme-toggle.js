@@ -1,30 +1,27 @@
 (function () {
   'use strict';
 
-  // Expose debug hook (optional)
-
-
   const storageKey = 'indus_theme';
 
   function applyTheme(theme) {
-    const html = document.documentElement;
-    if (theme === 'dark') html.setAttribute('data-theme', 'dark');
-    else html.removeAttribute('data-theme');
+    const next = theme === 'light' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
   }
 
   function getPreferredTheme() {
     let theme = null;
-
     try {
       theme = localStorage.getItem(storageKey);
     } catch (_) {
       theme = null;
     }
-
     if (theme === 'light' || theme === 'dark') return theme;
-
     const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     return prefersDark ? 'dark' : 'light';
+  }
+
+  function currentTheme() {
+    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
   }
 
   function hookToggleButtons() {
@@ -32,15 +29,13 @@
     if (!btn) return;
 
     function refreshLabel() {
-      const current = document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
-      btn.textContent = current === 'dark' ? 'Light' : 'Dark';
-      const isDark = current === 'dark';
+      const isDark = currentTheme() === 'dark';
+      btn.textContent = isDark ? 'Light' : 'Dark';
       btn.setAttribute('aria-pressed', isDark ? 'true' : 'false');
     }
 
     btn.addEventListener('click', () => {
-      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-      const next = isDark ? 'light' : 'dark';
+      const next = currentTheme() === 'dark' ? 'light' : 'dark';
       try {
         localStorage.setItem(storageKey, next);
       } catch (_) {}
@@ -51,13 +46,9 @@
     refreshLabel();
   }
 
-
-  // Apply immediately to avoid flash of wrong theme.
-  // Still safe: only uses localStorage + matchMedia.
   applyTheme(getPreferredTheme());
 
   document.addEventListener('DOMContentLoaded', () => {
     hookToggleButtons();
   });
 })();
-

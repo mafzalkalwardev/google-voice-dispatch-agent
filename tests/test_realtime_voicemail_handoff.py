@@ -1,8 +1,11 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.call_session import CallSession, CallState
+from src.conversation_loop import ConversationLoop
 from src.main import _run_realtime_loop
+from src.voicemail_detector import VoicemailDetector
 
 
 class _FakeLoop:
@@ -66,3 +69,35 @@ def test_realtime_voicemail_detection_plays_voicemail_audio():
     browser.hangup_call.assert_called_once()
     assert session.state == CallState.ENDED
     assert any("voicemail" in n.lower() for n in session.notes)
+
+
+def test_realtime_loop_requires_three_stable_multisignal_confirmations():
+    session = CallSession(phone="+15551234567", contact_name="Test Carrier")
+    session.transition(CallState.DIALING)
+    session.transition(CallState.CONNECTED)
+
+    loop = ConversationLoop.__new__(ConversationLoop)
+    loop._voicemail_detected = False
+    loop._vm_human_detected = False
+    loop._vm_answer_started_monotonic = 100.0
+    loop._vm_greeting_hits = 0
+    loop._vm_greeting_frames_required = 6
+    loop._voicemail_play_on_greeting = True
+    loop._vm_latest_transcript = ""
+    loop._vm_candidate_confirmations = 0
+    loop._voicemail_detector = SimpleNamespace(
+        continuous_greeting_duration_seconds=5.0,
+        beep_ready=True,
+        machine_pattern_detected=False,
+    )
+    loop._voicemail_evidence_detector = VoicemailDetector()
+    loop._session = session
+    loop.stop = MagicMock()
+
+    assert loop._evaluate_voicemail_evidence(108.0) is False
+    assert loop._evaluate_voicemail_evidence(108.1) is False
+    assert loop._evaluate_voicemail_evidence(108.2) is True
+
+    assert session.state == CallState.VOICEMAIL
+    assert session.outcome == "voicemail"
+    loop.stop.assert_called_once()

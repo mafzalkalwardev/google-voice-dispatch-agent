@@ -92,8 +92,7 @@ def _install_shutdown_handlers(browser_holder: list) -> None:
     def _shutdown(signum: int, frame) -> None:  # noqa: ARG001
         logger = logging.getLogger("GoogleVoiceAgent")
         logger.info("Shutdown signal %s — closing browser", signum)
-        browser = browser_holder[0] if browser_holder else None
-        if browser is not None:
+        for browser in list(browser_holder):
             try:
                 if browser.is_call_active():
                     browser.hangup_call()
@@ -1216,6 +1215,161 @@ def _run_safe_test(args: argparse.Namespace, cfg: "Config") -> None:
     logger.info("Safe test call completed.")
 
 
+def _run_parallel_live_batch(
+    *,
+    args: argparse.Namespace,
+    cfg: Config,
+    slots,
+    contacts: list[dict],
+    fingerprint: str,
+    browser_holder: list,
+    call_logger: CallLogger,
+    logger: logging.Logger,
+    script_dir: Path,
+    voicemail_dir: Path,
+    shared_call_kwargs: dict,
+) -> None:
+    """Run the Auto Dialer fixed-slot queue with one browser/audio route per slot."""
+    from src.batch_progress import mark_completed
+    from src.parallel_dialer import ParallelDialer
+
+    holder_lock = threading.Lock()
+
+    def context_factory(slot):
+        logger.info(
+            "[Slot %d] Launching Chrome profile=%s loopback=%s capture=%s",
+            slot.slot_id + 1,
+            slot.profile_name,
+            slot.loopback_device,
+            slot.capture_device,
+        )
+        loopback_index = find_playable_loopback_device(slot.loopback_device)
+        if loopback_index is None:
+            raise RuntimeError(
+                f"[Slot {slot.slot_id + 1}] loopback device not found: {slot.loopback_device}"
+            )
+        browser = GoogleVoiceBrowser(
+            profile_name=slot.profile_name,
+            headless=args.headless,
+            avoid_page_reload=cfg.avoid_gv_page_reload,
+        )
+        with holder_lock:
+            browser_holder.append(browser)
+        browser.launch()
+        if not browser.is_logged_in():
+            from src.gv_accounts import load_accounts
+            account = next(
+                (
+                    row for row in load_accounts(include_password=True)
+                    if row["profile_name"].casefold() == slot.profile_name.casefold()
+                ),
+                {},
+            )
+            logger.warning(
+                "[Slot %d] Google Voice login required for %s",
+                slot.slot_id + 1,
+                account.get("email") or slot.profile_name,
+            )
+            status = browser.ensure_logged_in(
+                str(account.get("email") or ""),
+                str(account.get("password") or ""),
+                timeout=300,
+            )
+            if status != "ready":
+                raise RuntimeError(
+                    f"[Slot {slot.slot_id + 1}] login did not complete: {status}"
+                )
+        cable_output = slot.loopback_device.replace("Input", "Output").replace("INPUT", "OUTPUT")
+        browser.warn_if_mic_not_set(cable_output)
+        return {
+            "browser": browser,
+            "ai": GroqAgent(api_key=cfg.groq_api_key, model=cfg.llm_model_batch),
+            "loopback_index": loopback_index,
+            "capture_device": safe_capture_hint(slot.capture_device, slot.loopback_device),
+            "calls_completed": 0,
+        }
+
+    def process_item(slot, context, index, contact):
+        browser = context["browser"]
+        if not browser.is_logged_in():
+            raise RuntimeError(f"[Slot {slot.slot_id + 1}] Google Voice login required")
+        logger.info(
+            "[Slot %d:%s] Assigned contact %d: %s",
+            slot.slot_id + 1,
+            slot.account_email or slot.profile_name,
+            index,
+            contact.get("phone", ""),
+        )
+        kwargs = dict(shared_call_kwargs)
+        kwargs.update(
+            loopback_device=slot.loopback_device,
+            loopback_device_index=context["loopback_index"],
+            loopback_available=True,
+            capture_device=context["capture_device"],
+        )
+        completed_phone = None
+        for attempt in range(2):
+            try:
+                completed_phone = _run_call(
+                    contact,
+                    index,
+                    browser,
+                    context["ai"],
+                    call_logger,
+                    logger,
+                    script_dir,
+                    voicemail_dir,
+                    **kwargs,
+                )
+                break
+            except WebDriverException as exc:
+                logger.error(
+                    "[Slot %d] Chrome/WebDriver error for contact %d (attempt %d/2): %s",
+                    slot.slot_id + 1,
+                    index,
+                    attempt + 1,
+                    exc,
+                )
+                if attempt == 0 and browser.recover_session():
+                    continue
+                break
+
+        if completed_phone:
+            mark_completed(fingerprint, completed_phone, index)
+            context["calls_completed"] += 1
+            restart_every = int(cfg.chrome_restart_every_n_calls)
+            if restart_every > 0 and context["calls_completed"] % restart_every == 0:
+                logger.info("[Slot %d] Restarting Chrome after %d calls", slot.slot_id + 1, restart_every)
+                browser.close()
+                browser.launch()
+                if not browser.is_logged_in() and not browser.wait_for_manual_login(timeout=120):
+                    raise RuntimeError(f"[Slot {slot.slot_id + 1}] re-login timed out")
+        return completed_phone
+
+    def context_close(slot, context):
+        browser = context["browser"]
+        try:
+            browser.close()
+        finally:
+            with holder_lock:
+                if browser in browser_holder:
+                    browser_holder.remove(browser)
+            logger.info("[Slot %d] Browser closed", slot.slot_id + 1)
+
+    indexed_contacts = list(enumerate(contacts, start=1))
+    scheduler = ParallelDialer(
+        slots,
+        cooldown_min=float(cfg.call_cooldown_seconds),
+        cooldown_max=float(cfg.call_cooldown_seconds),
+    )
+    scheduler.run(
+        indexed_contacts,
+        context_factory=context_factory,
+        process_item=process_item,
+        context_close=context_close,
+    )
+
+
 def main() -> None:
     args = _parse_args()
     if args.list_audio_devices:
@@ -1321,15 +1475,43 @@ def main() -> None:
     script_dir.mkdir(parents=True, exist_ok=True)
     voicemail_dir.mkdir(parents=True, exist_ok=True)
 
+    # Settings-page accounts are the source of truth for live worker slots.
+    # Each enabled account owns a persistent Chrome profile and isolated audio route.
+    from src.gv_accounts import load_accounts
+    enabled_accounts = [row for row in load_accounts(include_password=True) if row.get("enabled")]
+    account_by_profile = {str(row["profile_name"]).casefold(): row for row in enabled_accounts}
+    account_parallel_profiles = [
+        {
+            "profile_name": row["profile_name"],
+            "loopback_device": row["loopback_device"],
+            "capture_device": row["capture_device"],
+            "account_id": row["id"],
+            "account_email": row["email"],
+        }
+        for row in enabled_accounts
+    ]
+    if enabled_accounts:
+        first_account = enabled_accounts[0]
+        profile_name = first_account["profile_name"]
+        loopback_device = first_account["loopback_device"] or loopback_device
+        capture_device = first_account["capture_device"] or capture_device
+        logger.info(
+            "Account manager enabled %d Google Voice account(s): %s",
+            len(enabled_accounts),
+            ", ".join(row["email"] for row in enabled_accounts),
+        )
+
     loopback_device_index = find_playable_loopback_device(loopback_device)
     loopback_available = loopback_device_index is not None
-    if not loopback_available:
+    requested_slots = len(enabled_accounts) if enabled_accounts else int(cfg.n_slots)
+    parallel_requested = requested_slots > 1
+    if not loopback_available and not parallel_requested:
         logger.warning(
             "Loopback device '%s' not found — audio injection disabled. "
             "Install VB-CABLE from https://vb-audio.com/Cable/",
             loopback_device,
         )
-    if not args.dry_run and not loopback_available:
+    if not args.dry_run and not loopback_available and not parallel_requested:
         raise SystemExit(
             "Live calling needs an output loopback device so TTS reaches Google Voice. "
             "Install/configure VB-CABLE, set LOOPBACK_DEVICE or --loopback-device to the "
@@ -1374,42 +1556,6 @@ def main() -> None:
 
     browser_holder: list = []
     _install_shutdown_handlers(browser_holder)
-    browser = GoogleVoiceBrowser(
-        profile_name=profile_name,
-        headless=args.headless,
-        avoid_page_reload=cfg.avoid_gv_page_reload,
-    )
-    browser_holder.append(browser)
-    logger.info("Launching Chrome profile: %s", profile_name)
-    browser.launch()
-
-    if not browser.is_logged_in():
-        logger.warning(
-            "Google Voice is not logged in. Please sign in manually in the opened browser."
-        )
-        if not browser.wait_for_manual_login(timeout=300):
-            browser.close()
-            raise SystemExit("Login timed out after 5 minutes.")
-
-    # Warn if Chrome's mic is not CABLE Output — without this Tony's audio never reaches the call.
-    _cable_out = loopback_device.replace("Input", "Output").replace("INPUT", "OUTPUT")
-    browser.warn_if_mic_not_set(_cable_out)
-
-    logger.info("Logged in. Starting call loop (%d contacts).", len(contacts))
-
-    if cfg.tts_warmup and loopback_device_index is not None:
-        try:
-            from src.opening_pool import warmup_phrases
-            from src.tts_cache import TTSCache
-
-            cache = TTSCache(tts_voice=tts_voice)
-            cache.warm(warmup_phrases(agent_name, company_name))
-        except Exception as exc:
-            logger.debug("Opening TTS warmup skipped: %s", exc)
-
-    call_cooldown_seconds = float(cfg.call_cooldown_seconds)
-    from src.log_rotation import rotate_logs_if_needed
-
     shared_call_kwargs = dict(
         objective=args.objective,
         offer=args.offer,
@@ -1457,6 +1603,87 @@ def main() -> None:
         screening_purpose_text=cfg.screening_purpose_text,
         groq_max_retries_per_minute=_scaled_groq_rate_limit(cfg),
     )
+
+    from src.parallel_dialer import build_parallel_slots
+
+    try:
+        parallel_slots = build_parallel_slots(
+            requested=requested_slots,
+            max_concurrent_dials=cfg.max_concurrent_dials,
+            force_requested_slots=cfg.force_requested_slots,
+            primary_profile=profile_name,
+            primary_loopback=loopback_device,
+            primary_capture=capture_device,
+            parallel_profiles=(account_parallel_profiles or cfg.parallel_profiles),
+            allow_shared_audio_routes=cfg.allow_shared_audio_routes,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"Parallel calling configuration error: {exc}") from exc
+
+    if len(parallel_slots) > 1:
+        parallel_contacts = contacts
+        if cfg.max_calls_per_run > 0:
+            parallel_contacts = contacts[: cfg.max_calls_per_run]
+        logger.info(
+            "Starting controlled parallel call loop: %d slots, %d contacts",
+            len(parallel_slots),
+            len(parallel_contacts),
+        )
+        _run_parallel_live_batch(
+            args=args,
+            cfg=cfg,
+            slots=parallel_slots,
+            contacts=parallel_contacts,
+            fingerprint=fingerprint,
+            browser_holder=browser_holder,
+            call_logger=call_logger,
+            logger=logger,
+            script_dir=script_dir,
+            voicemail_dir=voicemail_dir,
+            shared_call_kwargs=shared_call_kwargs,
+        )
+        logger.info("All parallel calls complete. Logs: logs/call_logs.csv | Audio: %s/", output_dir)
+        return
+
+    browser = GoogleVoiceBrowser(
+        profile_name=profile_name,
+        headless=args.headless,
+        avoid_page_reload=cfg.avoid_gv_page_reload,
+    )
+    browser_holder.append(browser)
+    logger.info("Launching Chrome profile: %s", profile_name)
+    browser.launch()
+
+    if not browser.is_logged_in():
+        account = account_by_profile.get(profile_name.casefold(), {})
+        logger.warning("Google Voice session needs sign-in for profile %s", profile_name)
+        status = browser.ensure_logged_in(
+            str(account.get("email") or ""),
+            str(account.get("password") or ""),
+            timeout=300,
+        )
+        if status != "ready":
+            browser.close()
+            raise SystemExit(f"Google Voice login did not complete: {status}")
+
+    # Warn if Chrome's mic is not CABLE Output — without this Tony's audio never reaches the call.
+    _cable_out = loopback_device.replace("Input", "Output").replace("INPUT", "OUTPUT")
+    browser.warn_if_mic_not_set(_cable_out)
+
+    logger.info("Logged in. Starting call loop (%d contacts).", len(contacts))
+
+    if cfg.tts_warmup and loopback_device_index is not None:
+        try:
+            from src.opening_pool import warmup_phrases
+            from src.tts_cache import TTSCache
+
+            cache = TTSCache(tts_voice=tts_voice)
+            cache.warm(warmup_phrases(agent_name, company_name))
+        except Exception as exc:
+            logger.debug("Opening TTS warmup skipped: %s", exc)
+
+    call_cooldown_seconds = float(cfg.call_cooldown_seconds)
+    from src.log_rotation import rotate_logs_if_needed
 
     calls_completed = 0
     try:

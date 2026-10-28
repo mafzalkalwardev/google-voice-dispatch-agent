@@ -35,6 +35,81 @@ import numpy as np
 
 logger = logging.getLogger("GoogleVoiceAgent")
 
+
+VOICEMAIL_KEYWORDS = (
+    "leave a message",
+    "after the tone",
+    "after the beep",
+    "at the tone",
+    "not available",
+    "mailbox",
+    "your call has been forwarded",
+    "please record your message",
+    "voicemail",
+)
+
+
+@dataclass(frozen=True)
+class VoicemailDetection:
+    """Multi-signal voicemail result copied from the Auto Dialer detector."""
+
+    candidate: bool
+    confidence: float
+    factors: list[str] = field(default_factory=list)
+
+
+class VoicemailDetector:
+    """Score transcript, timing, tone, machine-pattern, and DOM evidence."""
+
+    def classify(
+        self,
+        *,
+        transcript: str = "",
+        answer_elapsed_seconds: float = 0.0,
+        continuous_greeting_duration_seconds: float = 0.0,
+        voicemail_keywords_detected_count: int = 0,
+        beep_detected: bool = False,
+        beep_confidence: float = 0.0,
+        dom_voicemail: bool = False,
+        repeated_machine_pattern: bool = False,
+        human_detected: bool = False,
+    ) -> VoicemailDetection:
+        factors: list[str] = []
+        text_keywords = self.keyword_count(transcript)
+        keyword_count = max(int(voicemail_keywords_detected_count or 0), text_keywords)
+
+        if continuous_greeting_duration_seconds >= 4.0:
+            factors.append("long scripted greeting")
+        if keyword_count > 0:
+            factors.append("voicemail keyword")
+        if beep_detected or beep_confidence >= 0.6:
+            factors.append("beep tone")
+        if repeated_machine_pattern:
+            factors.append("machine-like pattern")
+        if dom_voicemail:
+            factors.append("DOM voicemail cue")
+
+        confidence = min(1.0, (len(factors) / 2.0) * 0.5)
+        if "beep tone" in factors:
+            confidence = min(1.0, confidence + 0.35)
+        if "voicemail keyword" in factors:
+            confidence = min(1.0, confidence + 0.20)
+        if human_detected:
+            confidence = min(confidence, 0.35)
+
+        candidate = (
+            answer_elapsed_seconds >= 7.0
+            and not human_detected
+            and len(factors) >= 2
+            and confidence >= 0.75
+        )
+        return VoicemailDetection(candidate=candidate, confidence=confidence, factors=factors)
+
+    @staticmethod
+    def keyword_count(text: str) -> int:
+        lower = (text or "").lower()
+        return sum(1 for phrase in VOICEMAIL_KEYWORDS if phrase in lower)
+
 # ---------------------------------------------------------------------------
 # Beep frequency range
 # Most carrier voicemail beeps are in 800–1500 Hz.  Some older systems use
@@ -201,10 +276,13 @@ class VoicemailAudioClassifier:
         self._beep = BeepDetector(cfg)
 
         self._speech_frames: int = 0
+        self._continuous_speech_frames: int = 0
+        self._longest_speech_frames: int = 0
         self._silence_frames: int = 0
         self._start_time: float = time.monotonic()
         self._last_label: str = _VM_LABEL_UNCERTAIN
         self.beep_ready: bool = False
+        self.machine_pattern_detected: bool = False
 
         # Sliding window of RMS values for pattern analysis
         self._rms_window: Deque[float] = deque(maxlen=200)
@@ -229,8 +307,14 @@ class VoicemailAudioClassifier:
 
         if rms >= self._speech_rms:
             self._speech_frames += 1
+            self._continuous_speech_frames += 1
+            self._longest_speech_frames = max(
+                self._longest_speech_frames,
+                self._continuous_speech_frames,
+            )
             self._silence_frames = 0
         else:
+            self._continuous_speech_frames = 0
             self._silence_frames += 1
 
         label = self._classify()
@@ -241,11 +325,19 @@ class VoicemailAudioClassifier:
         """Reset state for a new call."""
         self._beep.reset()
         self._speech_frames = 0
+        self._continuous_speech_frames = 0
+        self._longest_speech_frames = 0
         self._silence_frames = 0
         self._start_time = time.monotonic()
         self._last_label = _VM_LABEL_UNCERTAIN
         self.beep_ready = False
+        self.machine_pattern_detected = False
         self._rms_window.clear()
+
+    @property
+    def continuous_greeting_duration_seconds(self) -> float:
+        """Longest uninterrupted active-audio run observed in this call."""
+        return self._longest_speech_frames * self._frame_ms / 1000.0
 
     # ------------------------------------------------------------------ #
     # Internal
@@ -273,6 +365,7 @@ class VoicemailAudioClassifier:
             cv = rms_arr.std() / (rms_arr.mean() + 1e-9)
             # Low coefficient of variation = consistent = likely pre-recorded
             if cv < 0.45 and self._speech_frames > 40:
+                self.machine_pattern_detected = True
                 return _VM_LABEL_GREETING
 
         return _VM_LABEL_LIVE

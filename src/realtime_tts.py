@@ -374,7 +374,14 @@ def save_edge_tts_wav(text: str, output_path: str | Path, voice: str = VOICE_GUY
         from src.tts import save_text_to_speech
 
         return save_text_to_speech(text, output_path)
-    data, rate = _edge_synthesize(text, voice)
+    try:
+        data, rate = _edge_synthesize(text, voice)
+    except Exception as exc:
+        # Keep voicemail/script generation working if Microsoft rotates DRM again.
+        logger.warning("edge-tts WAV synthesis failed (%s); falling back to pyttsx3", exc)
+        from src.tts import save_text_to_speech
+
+        return save_text_to_speech(text, output_path)
     sf.write(str(output_path), data, rate)
     logger.info("edge-tts WAV saved: %s (%d bytes)", output_path, output_path.stat().st_size)
     return output_path

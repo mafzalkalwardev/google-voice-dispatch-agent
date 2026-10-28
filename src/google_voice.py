@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from urllib.parse import urlparse
 from pathlib import Path
 from typing import Optional
 
@@ -341,11 +342,68 @@ class GoogleVoiceBrowser:
             return False
         try:
             url = self.driver.current_url or ""
-            if "voice.google.com" not in url:
+            if urlparse(url).hostname != "voice.google.com":
                 return False
             return self._find_first("login_indicator", timeout=4) is not None
         except WebDriverException:
             return False
+
+    def ensure_logged_in(
+        self,
+        email: str = "",
+        password: str = "",
+        timeout: float = 120.0,
+    ) -> str:
+        """Reuse a persistent session or establish one; never bypass MFA/CAPTCHA."""
+        if self.is_logged_in():
+            from src.gv_accounts import mark_session_ready
+            mark_session_ready(self.profile_dir.name)
+            return "ready"
+        if not self.driver:
+            return "browser_unavailable"
+        if email and password:
+            try:
+                self.driver.get("https://accounts.google.com/AccountChooser?continue=https://voice.google.com/")
+                deadline = time.time() + timeout
+                email_sent = False
+                password_sent = False
+                while time.time() < deadline:
+                    if self.is_logged_in():
+                        from src.gv_accounts import mark_session_ready
+                        mark_session_ready(self.profile_dir.name)
+                        return "ready"
+                    url = (self.driver.current_url or "").lower()
+                    if "challenge" in url or "signin/v2/challenge" in url:
+                        logger.warning("Google verification required for %s; complete it in Chrome", email)
+                        return "verification_required"
+                    if not email_sent:
+                        fields = self.driver.find_elements(By.CSS_SELECTOR, "input[type='email']")
+                        visible = next((el for el in fields if el.is_displayed()), None)
+                        if visible:
+                            visible.clear()
+                            visible.send_keys(email)
+                            visible.send_keys(Keys.ENTER)
+                            email_sent = True
+                            time.sleep(2)
+                            continue
+                    fields = self.driver.find_elements(By.CSS_SELECTOR, "input[type='password']")
+                    visible = next((el for el in fields if el.is_displayed()), None)
+                    if visible and not password_sent:
+                        visible.clear()
+                        visible.send_keys(password)
+                        visible.send_keys(Keys.ENTER)
+                        password_sent = True
+                        time.sleep(3)
+                        continue
+                    time.sleep(1)
+            except WebDriverException as exc:
+                logger.error("Automatic Google sign-in failed: %s", exc)
+                return "login_error"
+        if self.wait_for_manual_login(timeout=max(1, int(timeout))):
+            from src.gv_accounts import mark_session_ready
+            mark_session_ready(self.profile_dir.name)
+            return "ready"
+        return "login_timeout"
 
     def wait_for_manual_login(self, timeout: int = 300) -> bool:
         logger.info("Waiting up to %ds for manual Google login...", timeout)
@@ -475,7 +533,8 @@ class GoogleVoiceBrowser:
         if self.driver and self.avoid_page_reload and not force_reload:
             try:
                 url = self.driver.current_url or ""
-                if "/calls" in url:
+                current = urlparse(url)
+                if current.hostname == "voice.google.com" and "/calls" in current.path:
                     if self._find_first("number_input", timeout=1):
                         return True
                     if self._click_first("dialpad_open", timeout=1):
@@ -486,7 +545,8 @@ class GoogleVoiceBrowser:
         try:
             self.driver.get(f"{GV_URL}/u/0/calls")
             time.sleep(1.5)
-            return "/calls" in (self.driver.current_url or "")
+            current = urlparse(self.driver.current_url or "")
+            return current.hostname == "voice.google.com" and "/calls" in current.path
         except WebDriverException as exc:
             logger.warning("Could not open Google Voice Calls page: %s", exc)
         if self._click_first("calls_tab", timeout=5):
