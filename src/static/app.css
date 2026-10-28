@@ -98,22 +98,25 @@ code, kbd {
   overflow: hidden;
   border-right: 1px solid rgba(255,255,255,.04);
 
-  /* Theme aware background */
+  /* Theme aware background — Indus navy (kept in light + dark) */
   background: linear-gradient(180deg, #060e1a 0%, #0B1F3A 40%, #0d2241 100%);
 }
 
-/* Light/dark sidebar colors are finalized in dark-light.css */
+html[data-theme="dark"] .brand-name,
+html[data-theme="dark"] .nav-section-label,
+html[data-theme="dark"] .sidebar-footer-text,
+html[data-theme="dark"] .nav-link {
+  color: rgba(248, 250, 252, 0.9);
+}
 
-
-
-/* subtle animated shimmer on sidebar edge */
+/* subtle brand shimmer on sidebar edge */
 .sidebar::after {
   content: '';
   position: absolute;
   top: 0; right: 0;
   width: 1px;
   height: 100%;
-  background: linear-gradient(180deg, transparent, rgba(59,130,246,.3) 40%, transparent);
+  background: linear-gradient(180deg, transparent, rgba(245,166,35,.45) 40%, rgba(59,130,246,.3), transparent);
 }
 
 .layout {

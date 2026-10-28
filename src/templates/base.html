@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -12,7 +12,9 @@
     (function () {
       const storageKey = 'indus_theme';
       function applyTheme(theme) {
-        document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
+        const html = document.documentElement;
+        if (theme === 'dark') html.setAttribute('data-theme', 'dark');
+        else html.removeAttribute('data-theme');
       }
       function getPreferredTheme() {
         let theme = null;
@@ -21,7 +23,6 @@
         const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
         return prefersDark ? 'dark' : 'light';
       }
-      // Priority: saved -> system -> dark default for operator console.
       applyTheme(getPreferredTheme());
     })();
   </script>

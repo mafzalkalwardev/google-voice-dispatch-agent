@@ -4,8 +4,10 @@
   const storageKey = 'indus_theme';
 
   function applyTheme(theme) {
-    const next = theme === 'light' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', next);
+    const html = document.documentElement;
+    // Light keeps attribute unset so app.css light defaults + navy sidebar stay intact.
+    if (theme === 'dark') html.setAttribute('data-theme', 'dark');
+    else html.removeAttribute('data-theme');
   }
 
   function getPreferredTheme() {
@@ -21,7 +23,7 @@
   }
 
   function currentTheme() {
-    return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
   }
 
   function hookToggleButtons() {
