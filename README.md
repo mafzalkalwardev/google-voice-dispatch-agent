@@ -23,13 +23,11 @@
 
 ---
 
-## Project Showcase
+## Trophy Cards
 
-Google Voice Dispatch Agent is a Windows-first live calling system that turns Google Voice into an AI-assisted outbound call console. It controls Google Voice in Chrome, dials contacts, waits for real answer evidence, speaks through a virtual audio cable, listens to call audio, transcribes speech, generates replies with Groq, and writes outcomes back to logs and CRM files.
-
-It can run as a console app, a FastAPI operator console, or a packaged Windows EXE with Desktop and Startup shortcuts.
-
-> Compliance note: this project can place real calls. You are responsible for consent, caller-ID rules, Do Not Call compliance, recording disclosure, spam prevention, local law, Google Voice terms, and carrier/account limits.
+<div align="center">
+  <img src="https://github-profile-trophy.vercel.app/?username=mafzalkalwardev&theme=algolia&no-frame=true&no-bg=true&margin-w=12&margin-h=12&column=4" alt="GitHub trophy cards" />
+</div>
 
 ---
 
@@ -64,7 +62,7 @@ It can run as a console app, a FastAPI operator console, or a packaged Windows E
 
 ## SEO Keywords
 
-`AI calling agent` `Google Voice automation` `outbound call automation` `realtime voice AI` `FastAPI call console` `Selenium Google Voice bot` `Groq voice assistant` `Python call center automation` `Windows desktop AI app` `VB-CABLE voice routing` `AI dispatcher assistant` `CRM call logging` `voicemail detection` `speech to text calling agent` `text to speech phone agent`
+`AI calling agent` `Google Voice automation` `outbound call automation` `FastAPI call console`
 
 ---
 
