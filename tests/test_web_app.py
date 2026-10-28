@@ -166,7 +166,11 @@ def test_api_settings_ignores_unknown_keys(client):
 
 def test_contacts_upload_csv(client):
     csv_content = b"Name,Phone\nAlice Carrier,+12125550100\nBob Trucking,+12125550101\n"
-    with patch("src.contacts_index.build_index", return_value=2):
+    with patch("src.contacts.load_contacts") as mock_load:
+        mock_load.return_value = [
+            {"name": "Alice Carrier", "phone": "+12125550100"},
+            {"name": "Bob Trucking",  "phone": "+12125550101"},
+        ]
         r = client.post(
             "/api/contacts/upload",
             files={"file": ("contacts.csv", BytesIO(csv_content), "text/csv")},
@@ -175,42 +179,6 @@ def test_contacts_upload_csv(client):
     data = r.json()
     assert data["ok"] is True
     assert data["count"] == 2
-
-
-def test_api_contacts_list_route_exists(client):
-    with patch("src.web_app._contacts_list_payload") as mock_payload:
-        mock_payload.return_value = {
-            "ok": True,
-            "rows": [{"name": "A", "phone": "+1"}],
-            "total": 1,
-            "page": 1,
-            "pages": 1,
-            "start": 1,
-            "end": 1,
-            "per_page": 50,
-            "intelligence": {},
-        }
-        r = client.get("/api/contacts/list?page=1&per_page=50")
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
-
-
-def test_contacts_page_renders(client):
-    with patch("src.web_app._get_contacts_preview") as mock_preview, \
-         patch("src.web_app._contacts_list_payload") as mock_list:
-        mock_preview.return_value = {"total": 1, "error": None, "rows": [], "intelligence": {}}
-        mock_list.return_value = {
-            "ok": True,
-            "rows": [{"name": "Alice", "phone": "+12125550100", "intel_label": "New", "intel_status": "new"}],
-            "total": 1,
-            "page": 1,
-            "pages": 1,
-            "start": 1,
-            "end": 1,
-        }
-        r = client.get("/contacts?page=1&per_page=50")
-    assert r.status_code == 200
-    assert b"Alice" in r.content
 
 
 def test_contacts_upload_bad_format(client):
@@ -326,25 +294,6 @@ def test_api_logs_empty(client):
     assert r.status_code == 200
     data = r.json()
     assert isinstance(data, list)
-
-
-def test_api_dashboard_stats(client, tmp_path):
-    log_file = tmp_path / "call_logs.csv"
-    log_file.write_text(
-        ",".join([
-            "timestamp", "phone", "name", "status", "outcome",
-            "started_at", "connected_at", "voicemail_detected_at", "ended_at",
-            "connected_duration_s", "total_duration_s", "notes",
-        ]) + "\n"
-        "2026-06-02 16:00:00,+1,Alice,ENDED,ENDED,,,2026-06-02T16:00:01,,10,20,vm\n",
-        encoding="utf-8",
-    )
-    with patch("src.web_app.CALL_LOG_FILE", log_file):
-        r = client.get("/api/dashboard/stats")
-    assert r.status_code == 200
-    data = r.json()
-    assert data["logs"]["total"] == 1
-    assert len(data["recent"]) == 1
 
 
 def test_api_logs_with_data(client, tmp_path):

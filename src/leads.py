@@ -1,5 +1,5 @@
 """
-Lead management for INDUS TRANSPORTS LLC.
+Lead management for Spectrum Business outreach.
 
 Reads/writes logs/leads.csv and extracts structured data from call
 transcripts using Groq JSON extraction.
@@ -27,6 +27,23 @@ LEADS_HEADERS = [
     "mc_number",
     "dot_number",
     "email",
+    "decision_maker",
+    "current_provider",
+    "internet_needs",
+    "internet_speed",
+    "outages_or_issues",
+    "phone_needs",
+    "phone_lines",
+    "mobile_needs",
+    "mobile_lines",
+    "business_type",
+    "employee_count",
+    "contract_status",
+    "contract_expiration",
+    "appointment_day",
+    "appointment_time",
+    "appointment_window",
+    "services_discussed",
     "truck_type",
     "truck_length",
     "dimensions",
@@ -57,9 +74,13 @@ LEADS_HEADERS = [
 _INTERESTED_VALUES = {"Yes", "Maybe", "No", "DNC"}
 
 _EXTRACT_SYSTEM = (
-    "You extract lead information and a post-call summary from a freight dispatch call transcript.\n"
+    "You extract lead information and a post-call summary from a Spectrum Business sales call transcript.\n"
     'Return ONLY a valid JSON object with these exact keys (use "" for unknown):\n'
-    "  company_name, contact_name, mc_number, dot_number, email, truck_type, truck_length, dimensions,\n"
+    "  company_name, contact_name, mc_number, dot_number, email, decision_maker, current_provider,\n"
+    "  internet_needs, internet_speed, outages_or_issues, phone_needs, phone_lines,\n"
+    "  mobile_needs, mobile_lines, business_type, employee_count, contract_status,\n"
+    "  contract_expiration, appointment_day, appointment_time, appointment_window,\n"
+    "  services_discussed, truck_type, truck_length, dimensions,\n"
     "  accessories, preferred_lanes, local_or_otr, dispatcher_status, factoring_company,\n"
     "  pricing_discussion, agreed_percentage, objections, interest_level, interested,\n"
     "  callback_time, follow_up_status, follow_up_notes, post_call_sentiment,\n"
@@ -70,10 +91,14 @@ _EXTRACT_SYSTEM = (
     '- interest_level: use "hot", "warm", "cold", "not_interested", "dnc", or ""\n'
     '- close_probability: use a percentage string like "70%" or ""\n'
     '- urgency: use "high", "medium", "low", or ""\n'
-    '- call_outcome: short phrase e.g. "Interested - callback Thursday", "Voicemail", "Not interested"\n'
-    '- agreed_percentage: commission % if mentioned (e.g. "8%"), else ""\n'
+    '- call_outcome: short phrase e.g. "Appointment requested - Tuesday 10 AM", "Callback requested", "Voicemail", "Not interested"\n'
+    '- decision_maker: "Yes", "No", or role/title if stated\n'
+    "- current_provider: AT&T, Comcast Business, Verizon Business, Frontier, Cox, T-Mobile, or any provider named by the prospect.\n"
+    "- appointment_window: combine appointment_day and appointment_time when both are known.\n"
+    "- services_discussed: comma-separated Spectrum Business services discussed, such as Internet, Voice, Mobile, Business Connect, TV, WiFi, Security.\n"
+    '- agreed_percentage: legacy freight field; use "" unless explicitly mentioned.\n'
     '- dot_number: DOT/USDOT number if mentioned, else ""\n'
-    "- Include factoring company, objections, pain points, and follow-up strategy when stated or clearly inferable.\n"
+    "- Include objections, pain points, and follow-up strategy when stated or clearly inferable.\n"
     "- Do NOT invent data. Use \"\" for unknowns.\n"
     "- Return raw JSON only. No markdown, no code fences, no extra text."
 )
@@ -182,19 +207,18 @@ def extract_lead_from_transcript(
         return blank
 
     try:
-        from src.groq_pool import pool_for_request
+        from groq import Groq  # type: ignore
 
-        resp = pool_for_request(groq_api_key).execute(
-            lambda client: client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": _EXTRACT_SYSTEM},
-                    {"role": "user", "content": f"TRANSCRIPT:\n{text[:6000]}"},
-                ],
-                max_tokens=512,
-                temperature=0.1,
-                response_format={"type": "json_object"},
-            )
+        client = Groq(api_key=groq_api_key)
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _EXTRACT_SYSTEM},
+                {"role": "user", "content": f"TRANSCRIPT:\n{text[:6000]}"},
+            ],
+            max_tokens=512,
+            temperature=0.1,
+            response_format={"type": "json_object"},
         )
         raw = resp.choices[0].message.content.strip()
         data = _parse_json_object(raw)

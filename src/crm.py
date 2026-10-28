@@ -491,13 +491,16 @@ def _row_to_dict(row: sqlite3.Row | dict | None) -> dict:
 # ---------------------------------------------------------------------------
 
 def _read_call_logs() -> list[dict]:
+    if not CALL_LOG_FILE.exists():
+        return []
+    rows: list[dict] = []
     try:
-        from src.call_log import read_call_logs  # type: ignore
-
-        return list(reversed(read_call_logs(limit=None, path=CALL_LOG_FILE)))
+        with CALL_LOG_FILE.open(newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                rows.append(dict(row))
     except Exception as exc:
         logger.warning("call_logs read error: %s", exc)
-        return []
+    return rows
 
 
 def _read_leads() -> list[dict]:
@@ -595,20 +598,17 @@ def transcribe_recording(
     if not groq_api_key or not recording_path.exists():
         return ""
     try:
-        from src.groq_pool import pool_for_request
+        from groq import Groq  # type: ignore
 
-        pool = pool_for_request(groq_api_key)
+        client = Groq(api_key=groq_api_key)
         with recording_path.open("rb") as fh:
-            wav = fh.read()
-        result = pool.execute(
-            lambda client: client.audio.transcriptions.create(
-                file=(recording_path.name, wav, "audio/wav"),
+            result = client.audio.transcriptions.create(
+                file=(recording_path.name, fh.read(), "audio/wav"),
                 model=model,
                 language="en",
                 prompt=prompt,
                 response_format="text",
             )
-        )
         return _clean(getattr(result, "text", result))
     except Exception as exc:
         logger.warning("Recording transcription failed for %s: %s", recording_path, exc)
@@ -901,7 +901,7 @@ def finalize_call_session(
         lead = _extract_lead_if_needed(session, contact, lead, groq_api_key, model)
 
     lead["phone_number"] = _lead_value(lead, "phone_number") or session.phone or contact.get("phone", "")
-    lead["contact_name"] = _lead_value(lead, "contact_name") or contact.get("name", "") or session.contact_name
+    lead["contact_name"] = _lead_value(lead, "contact_name") or session.contact_name or contact.get("name", "")
     lead["timestamp"] = _lead_value(lead, "timestamp") or _now()
     if transcript_path:
         lead["transcript_file"] = str(transcript_path)
@@ -917,16 +917,7 @@ def finalize_call_session(
 
     carrier_id = upsert_carrier_profile(lead, contact, session)
 
-    if call_type in ("connected", "voicemail"):
-        if call_type == "voicemail":
-            lead.setdefault("call_outcome", "Voicemail")
-            lead.setdefault("interested", lead.get("interested") or "")
-            if not _lead_value(lead, "post_call_summary", "ai_summary") and transcript_text.strip():
-                lead["post_call_summary"] = transcript_text.strip()[:500]
-            if not _lead_value(lead, "post_call_summary", "ai_summary"):
-                lead["post_call_summary"] = "Voicemail — no live conversation"
-            lead["company_name"] = _lead_value(lead, "company_name") or contact.get("company", "") or contact.get("name", "")
-            lead["contact_name"] = _lead_value(lead, "contact_name") or contact.get("name", "") or session.contact_name
+    if call_type == "connected":
         try:
             from src.leads import upsert_lead  # type: ignore
 
@@ -1075,77 +1066,6 @@ def _public_call(row: sqlite3.Row | dict) -> dict:
     return data
 
 
-def _public_artifact(row: sqlite3.Row | dict) -> dict:
-    data = dict(row)
-    carrier: dict = {}
-    carrier_id = data.get("carrier_id", "")
-    if carrier_id:
-        try:
-            with _connect() as conn:
-                crow = conn.execute(
-                    "SELECT company_name, carrier_name, email, truck_type, truck_length, "
-                    "preferred_lanes, interested_status FROM carriers WHERE id=?",
-                    (carrier_id,),
-                ).fetchone()
-            if crow:
-                carrier = dict(crow)
-        except Exception:
-            carrier = {}
-    name = (
-        data.get("contact_name")
-        or carrier.get("carrier_name")
-        or carrier.get("company_name")
-        or ""
-    )
-    return {
-        "id": data.get("id", ""),
-        "timestamp": data.get("timestamp", ""),
-        "phone": data.get("phone", ""),
-        "company_name": carrier.get("company_name", "") or name,
-        "carrier_name": carrier.get("carrier_name", "") or name,
-        "name": name,
-        "email": carrier.get("email", ""),
-        "truck_type": carrier.get("truck_type", ""),
-        "truck_length": carrier.get("truck_length", ""),
-        "preferred_lanes": carrier.get("preferred_lanes", ""),
-        "interested_status": carrier.get("interested_status", ""),
-        "interested": carrier.get("interested_status", ""),
-        "follow_up_status": data.get("call_type", "").title() if data.get("call_type") else "Open",
-        "call_type": data.get("call_type", ""),
-        "duration": data.get("duration", 0),
-        "connected_duration_s": data.get("duration", 0),
-        "connected_duration": _format_duration(data.get("duration")),
-        "recording_path": data.get("recording_path", ""),
-        "transcript_path": data.get("transcript_path", ""),
-        "transcript_file": data.get("transcript_path", ""),
-        "ai_summary": data.get("ai_summary", ""),
-        "post_call_summary": data.get("ai_summary", ""),
-        "outcome": data.get("outcome", ""),
-        "reason": data.get("reason", ""),
-    }
-
-
-def get_recent_call_artifacts(
-    limit: int = 100,
-    call_types: tuple[str, ...] = ("connected", "voicemail"),
-) -> list[dict]:
-    """Recent calls for Recordings / activity views (includes voicemail with audio)."""
-    if not call_types:
-        return []
-    placeholders = ", ".join("?" for _ in call_types)
-    with _connect() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT * FROM call_artifacts
-            WHERE call_type IN ({placeholders})
-            ORDER BY timestamp DESC
-            LIMIT ?
-            """,
-            (*call_types, limit),
-        ).fetchall()
-    return [_public_artifact(row) for row in rows]
-
-
 def get_connected_calls() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
@@ -1154,17 +1074,6 @@ def get_connected_calls() -> list[dict]:
     if not rows:
         return _legacy_connected_calls()
     return [_public_call(row) for row in rows]
-
-
-def get_call_artifact(call_id: str) -> Optional[dict]:
-    with _connect() as conn:
-        row = conn.execute("SELECT * FROM call_artifacts WHERE id=?", (call_id,)).fetchone()
-    return _public_artifact(row) if row else None
-
-
-def get_call_for_ui(call_id: str) -> Optional[dict]:
-    """Resolve a call row for recording viewer (connected table or artifact)."""
-    return get_connected_call(call_id) or get_call_artifact(call_id)
 
 
 def get_connected_call(call_id: str) -> Optional[dict]:
@@ -1605,17 +1514,11 @@ def export_carriers_csv(rows: Optional[list[dict]] = None) -> str:
 
 
 def recording_path_for_call(call_id: str) -> Optional[Path]:
-    cid = _clean(call_id)
     with _connect() as conn:
         row = conn.execute(
             "SELECT recording_path FROM connected_calls WHERE id=?",
-            (cid,),
+            (_clean(call_id),),
         ).fetchone()
-        if not row or not row["recording_path"]:
-            row = conn.execute(
-                "SELECT recording_path FROM call_artifacts WHERE id=?",
-                (cid,),
-            ).fetchone()
     if not row or not row["recording_path"]:
         return None
     path = Path(row["recording_path"])

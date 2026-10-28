@@ -38,8 +38,6 @@ def _make_loop(
         stt=mock_stt,
         wait_for_human_audio=False,
         answered_speak_delay=0.0,
-        stream_llm_replies=False,
-        use_thinking_fillers=False,
     )
     return loop, mock_tts, mock_agent, mock_stt
 

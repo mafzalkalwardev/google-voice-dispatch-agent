@@ -26,6 +26,7 @@ import logging
 import queue
 import sys
 import threading
+import warnings
 from typing import Optional
 
 import numpy as np
@@ -178,7 +179,12 @@ class AudioCapture:
 
         with mic.recorder(samplerate=self.samplerate) as recorder:
             while not self._stop.is_set():
-                data = recorder.record(numframes=self.frame_size)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message="data discontinuity in recording",
+                    )
+                    data = recorder.record(numframes=self.frame_size)
                 if data.ndim > 1:
                     data = data.mean(axis=1)         # stereo → mono
                 self._put(data.astype(np.float32))

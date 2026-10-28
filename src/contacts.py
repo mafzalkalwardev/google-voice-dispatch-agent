@@ -1,6 +1,5 @@
 import pandas as pd
 from pathlib import Path
-_contacts_cache: dict[str, tuple[float, int, list[dict]]] = {}
 
 VALID_PHONE_COLUMNS = ["Phone", "phone", "PHONE", "Phone Number", "Mobile", "Number"]
 VALID_NAME_COLUMNS = [
@@ -59,57 +58,3 @@ def load_contacts(path: str):
         contacts.append({"phone": number, "name": str(name).strip() or "Unknown"})
 
     return contacts
-
-
-def load_contacts_cached(path: str | Path, *, force_reload: bool = False) -> list[dict]:
-    """Load contacts with in-process cache keyed by file mtime/size."""
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(f"Contacts file not found: {p}")
-    stat = p.stat()
-    cache_key = f"{p.resolve()}|{stat.st_size}|{int(stat.st_mtime)}"
-    cached = _contacts_cache.get(cache_key)
-    if not force_reload and cached:
-        _mtime, _size, rows = cached
-        if _mtime == stat.st_mtime and _size == stat.st_size:
-            return rows
-    rows = load_contacts(p)
-    _contacts_cache.clear()
-    _contacts_cache[cache_key] = (stat.st_mtime, stat.st_size, rows)
-    return rows
-
-
-def paginate_contacts(
-    rows: list[dict],
-    *,
-    page: int = 1,
-    per_page: int = 50,
-    query: str = "",
-) -> dict:
-    """Filter by search query and return one page of results."""
-    q = (query or "").strip().lower()
-    if q:
-        filtered = [
-            c
-            for c in rows
-            if q in (c.get("name") or "").lower() or q in (c.get("phone") or "").lower()
-        ]
-    else:
-        filtered = rows
-    per_page = max(10, min(200, int(per_page)))
-    page = max(1, int(page))
-    total = len(filtered)
-    pages = max(1, (total + per_page - 1) // per_page)
-    if page > pages:
-        page = pages
-    start = (page - 1) * per_page
-    slice_rows = filtered[start : start + per_page]
-    return {
-        "rows": slice_rows,
-        "page": page,
-        "per_page": per_page,
-        "total": total,
-        "pages": pages,
-        "start": start + 1 if total else 0,
-        "end": min(start + per_page, total),
-    }

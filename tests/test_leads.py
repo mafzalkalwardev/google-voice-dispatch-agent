@@ -160,7 +160,7 @@ def test_extract_lead_includes_post_call_summary_fields(tmp_path: Path) -> None:
     }
     resp = MagicMock()
     resp.choices[0].message.content = json.dumps(payload)
-    with patch("src.groq_pool.Groq") as MockGroq:
+    with patch("groq.Groq") as MockGroq:
         MockGroq.return_value.chat.completions.create.return_value = resp
         result = extract_lead_from_transcript(
             transcript_path=transcript,
@@ -173,3 +173,48 @@ def test_extract_lead_includes_post_call_summary_fields(tmp_path: Path) -> None:
     assert result["post_call_sentiment"] == "positive"
     assert result["close_probability"] == "70%"
     assert result["best_follow_up_strategy"].startswith("Lead with")
+
+
+def test_extract_lead_includes_spectrum_business_fields(tmp_path: Path) -> None:
+    from src.leads import extract_lead_from_transcript
+
+    transcript = tmp_path / "spectrum_call.txt"
+    transcript.write_text(
+        "\n".join([
+            "[12:00:00] Jason: Are you the person who handles internet and phone services?",
+            "[12:00:05] Prospect: Yes, we use AT&T and have outages. We need two phone lines.",
+            "[12:00:20] Prospect: Tuesday at 10 AM works for a technician visit.",
+        ]),
+        encoding="utf-8",
+    )
+    payload = {
+        "company_name": "Main Street Cafe",
+        "contact_name": "Pat",
+        "decision_maker": "Yes",
+        "current_provider": "AT&T",
+        "internet_needs": "Reliable internet for POS and guest WiFi",
+        "outages_or_issues": "Outages",
+        "phone_needs": "Two business phone lines",
+        "phone_lines": "2",
+        "appointment_day": "Tuesday",
+        "appointment_time": "10 AM",
+        "appointment_window": "Tuesday 10 AM",
+        "services_discussed": "Internet, Voice, WiFi",
+        "interest_level": "hot",
+        "interested": "Yes",
+        "call_outcome": "Appointment requested - Tuesday 10 AM",
+    }
+    resp = MagicMock()
+    resp.choices[0].message.content = json.dumps(payload)
+    with patch("groq.Groq") as MockGroq:
+        MockGroq.return_value.chat.completions.create.return_value = resp
+        result = extract_lead_from_transcript(
+            transcript_path=transcript,
+            contact={"name": "Pat", "phone": "+15551234567"},
+            groq_api_key="gsk_test",
+        )
+
+    assert result["current_provider"] == "AT&T"
+    assert result["decision_maker"] == "Yes"
+    assert result["appointment_window"] == "Tuesday 10 AM"
+    assert result["services_discussed"] == "Internet, Voice, WiFi"

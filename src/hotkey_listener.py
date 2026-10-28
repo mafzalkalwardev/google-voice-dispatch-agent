@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from typing import Callable
 
 logger = logging.getLogger("GoogleVoiceAgent")
@@ -85,19 +84,13 @@ class HotkeyListener:
                 pass
             self._registered = False
 
-    def _debounced_fire(self, handler, key_name: str, cooldown_s: float = 0.75) -> None:
-        now = time.monotonic()
-        last = getattr(self, f"_last_{key_name}_monotonic", 0.0)
-        if now - last < cooldown_s:
-            return
-        setattr(self, f"_last_{key_name}_monotonic", now)
-        threading.Thread(target=handler, daemon=True).start()
-
+    # Callbacks run in keyboard's internal thread; dispatch via daemon threads
+    # so we never block the keyboard hook.
     def _fire_takeover(self) -> None:
-        self._debounced_fire(self._on_takeover, "takeover")
+        threading.Thread(target=self._on_takeover, daemon=True).start()
 
     def _fire_resume(self) -> None:
-        self._debounced_fire(self._on_resume, "resume")
+        threading.Thread(target=self._on_resume, daemon=True).start()
 
     def _fire_stop(self) -> None:
-        self._debounced_fire(self._on_stop, "stop")
+        threading.Thread(target=self._on_stop, daemon=True).start()
