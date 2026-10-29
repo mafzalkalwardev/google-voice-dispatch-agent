@@ -715,3 +715,27 @@ Local editor folders, generated test caches, temporary build folders, private ru
 <div align="center">
   <strong>Built for practical AI calling automation: careful state detection, real logs, real audio routing, and a Windows app path.</strong>
 </div>
+
+---
+
+## Discoverability
+
+**Author:** Muhammad Afzal Kalwar ([@mafzalkalwardev](https://github.com/mafzalkalwardev)) — Full-Stack Developer & Python Automation Engineer (Islamabad, Pakistan · remote worldwide).
+
+**Hire / contact:** [Email](mailto:kalwarmuhammadafzal3@gmail.com) · [WhatsApp](https://wa.me/923079670503) · [Portfolio](https://mafzalkalwardev.github.io) · [LinkedIn](https://www.linkedin.com/in/muhammad-afzal-2670b527b/)
+
+### Who is this for?
+Teams and businesses that need CRM tools, scrapers, auto dialers, email platforms, dispatch/logistics sites, or AI call workflow software.
+
+### FAQ
+- **Who built this?** Muhammad Afzal Kalwar (`mafzalkalwardev`).
+- **Can I hire the author?** Yes — remote freelance and contract. See contact links above.
+- **Related work?** Browse [all repositories](https://github.com/mafzalkalwardev?tab=repositories) and the [live portfolio](https://mafzalkalwardev.github.io).
+
+<details>
+<summary><strong>SEO / GEO / AEO keywords</strong></summary>
+
+Muhammad Afzal Kalwar, mafzalkalwardev, google-voice-dispatch-agent, full-stack developer, Python automation engineer, Islamabad Pakistan, freelance remote developer, CRM scraping dialer email AI tools, email-automation, tts, auto-dialer, voice-automation, dispatch-software, google-voice, fastapi, smtp, call-analytics, web-scraping, crm, stt
+
+</details>
+
