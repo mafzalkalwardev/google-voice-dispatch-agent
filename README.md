@@ -718,6 +718,25 @@ Local editor folders, generated test caches, temporary build folders, private ru
 
 ---
 
+---
+
+## Case Study (Problem → Stack → Result)
+
+### Problem
+Dispatch and outbound sales teams needed a low-cost way to run Google Voice calling workflows with scripts, voicemail handling, and operator control — without buying an expensive dialer stack.
+
+### Stack
+Python, Selenium, FastAPI, Groq LLM, local TTS, operator console UI, CRM-style call logging
+
+### Result
+Shipped a production-ready outbound assistant that generates call scripts, drives Google Voice in the browser, handles voicemail paths, and gives operators a live console — reducing manual dialing friction for logistics/dispatch use cases.
+
+**Audience:** Dispatch teams, logistics ops, outbound sales agencies
+
+📄 Full write-up: [`CASE_STUDY.md`](./CASE_STUDY.md)
+
+**Hire / contact:** GitHub [@mafzalkalwardev](https://github.com/mafzalkalwardev) · LinkedIn [@mafzalkalwardev](https://www.linkedin.com/in/mafzalkalwardev) · WhatsApp [+92 307 9670503](https://wa.me/923079670503) · [Portfolio](https://mafzalkalwardev.github.io) · [Email](mailto:kalwarmuhammadafzal3@gmail.com)
+
 ## Discoverability
 
 **Author:** Muhammad Afzal Kalwar ([@mafzalkalwardev](https://github.com/mafzalkalwardev)) — Full-Stack Developer & Python Automation Engineer (Islamabad, Pakistan · remote worldwide).
